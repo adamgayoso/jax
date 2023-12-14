@@ -12,12 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax._src.errors import (
   JAXTypeError as JAXTypeError,
   JAXIndexError as JAXIndexError,
   ConcretizationTypeError as ConcretizationTypeError,
   NonConcreteBooleanIndexError as NonConcreteBooleanIndexError,
   TracerArrayConversionError as TracerArrayConversionError,
+  TracerBoolConversionError as TracerBoolConversionError,
   TracerIntegerConversionError as TracerIntegerConversionError,
   UnexpectedTracerError as UnexpectedTracerError,
 )
+from jax._src.traceback_util import SimplifiedTraceback as SimplifiedTraceback

@@ -11,7 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Mapping, Optional, Tuple, Union
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, Callable
+
+import jax
 from jax._src.scipy.optimize.bfgs import minimize_bfgs
 from jax._src.scipy.optimize._lbfgs import _minimize_lbfgs
 from typing import NamedTuple
@@ -34,25 +40,25 @@ class OptimizeResults(NamedTuple):
     njev: integer number of gradient evaluations.
     nit: integer number of iterations of the optimization algorithm.
   """
-  x: jnp.ndarray
-  success: Union[bool, jnp.ndarray]
-  status: Union[int, jnp.ndarray]
-  fun: jnp.ndarray
-  jac: jnp.ndarray
-  hess_inv: Optional[jnp.ndarray]
-  nfev: Union[int, jnp.ndarray]
-  njev: Union[int, jnp.ndarray]
-  nit: Union[int, jnp.ndarray]
+  x: jax.Array
+  success: bool | jax.Array
+  status: int | jax.Array
+  fun: jax.Array
+  jac: jax.Array
+  hess_inv: jax.Array | None
+  nfev: int | jax.Array
+  njev: int | jax.Array
+  nit: int | jax.Array
 
 
 def minimize(
     fun: Callable,
-    x0: jnp.ndarray,
-    args: Tuple = (),
+    x0: jax.Array,
+    args: tuple = (),
     *,
     method: str,
-    tol: Optional[float] = None,
-    options: Optional[Mapping[str, Any]] = None,
+    tol: float | None = None,
+    options: Mapping[str, Any] | None = None,
 ) -> OptimizeResults:
   """Minimization of scalar function of one or more variables.
 
@@ -66,7 +72,7 @@ def minimize(
   - Optimization results may differ from SciPy due to differences in the line
     search implementation.
 
-  ``minimize`` supports ``jit`` compilation. It does not yet support
+  ``minimize`` supports :func:`~jax.jit` compilation. It does not yet support
   differentiation or arguments in the form of multi-dimensional arrays, but
   support for both is planned.
 
@@ -114,7 +120,7 @@ def minimize(
 
   if method.lower() == 'l-bfgs-experimental-do-not-rely-on-this':
     results = _minimize_lbfgs(fun_with_args, x0, **options)
-    success = results.converged & (~results.failed)
+    success = results.converged & jnp.logical_not(results.failed)
     return OptimizeResults(x=results.x_k,
                            success=success,
                            status=results.status,

@@ -14,27 +14,53 @@
 
 # NVIDIA CUDA kernels
 
+load("@rules_python//python:defs.bzl", "py_library")
 load(
     "//jaxlib:jax.bzl",
     "cuda_library",
+    "if_cuda_is_configured",
     "pybind_extension",
 )
 
 licenses(["notice"])
 
-package(default_visibility = ["//:__subpackages__"])
+package(
+    default_applicable_licenses = [],
+    default_visibility = ["//:__subpackages__"],
+)
+
+cc_library(
+    name = "cuda_vendor",
+    hdrs = [
+        "//jaxlib/gpu:vendor.h",
+    ],
+    defines = ["JAX_GPU_CUDA=1"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@local_config_cuda//cuda:cuda_headers",
+        "@local_config_cuda//cuda:cudnn_header",
+    ],
+)
 
 cc_library(
     name = "cuda_gpu_kernel_helpers",
-    srcs = ["cuda_gpu_kernel_helpers.cc"],
-    hdrs = ["cuda_gpu_kernel_helpers.h"],
+    srcs = [
+        "//jaxlib/gpu:gpu_kernel_helpers.cc",
+    ],
+    hdrs = [
+        "//jaxlib/gpu:gpu_kernel_helpers.h",
+    ],
     copts = [
         "-fexceptions",
     ],
     features = ["-use_header_modules"],
     deps = [
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cusolver_lib",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cusparse_lib",
+        ":cuda_vendor",
+        "@tsl//tsl/cuda:cupti",
+        "@tsl//tsl/cuda:cusolver",
+        "@tsl//tsl/cuda:cusparse",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -47,15 +73,16 @@ cc_library(
 
 cc_library(
     name = "cublas_kernels",
-    srcs = ["cublas_kernels.cc"],
-    hdrs = ["cublas_kernels.h"],
+    srcs = ["//jaxlib/gpu:blas_kernels.cc"],
+    hdrs = ["//jaxlib/gpu:blas_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         "//jaxlib:handle_pool",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cublas_lib",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cudart_stub",
+        "@xla//xla/service:custom_call_status",
+        "@tsl//tsl/cuda:cublas",
+        "@tsl//tsl/cuda:cudart",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
@@ -71,35 +98,83 @@ cc_library(
 )
 
 pybind_extension(
-    name = "_cublas",
-    srcs = ["cublas.cc"],
+    name = "_blas",
+    srcs = ["//jaxlib/gpu:blas.cc"],
     copts = [
         "-fexceptions",
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    module_name = "_cublas",
+    linkopts = select({
+        "@xla//xla/python:use_jax_cuda_pip_rpaths": [
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cuda_runtime/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cublas/lib",
+        ],
+        "//conditions:default": [],
+    }),
+    module_name = "_blas",
     deps = [
         ":cublas_kernels",
-        "//jaxlib:kernel_pybind11_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cublas_lib",
+        ":cuda_vendor",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cublas",
+        "@tsl//tsl/python/lib/core:numpy",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings:str_format",
+        "@nanobind",
+    ],
+)
+
+cc_library(
+    name = "cudnn_rnn_kernels",
+    srcs = ["//jaxlib/gpu:rnn_kernels.cc"],
+    hdrs = ["//jaxlib/gpu:rnn_kernels.h"],
+    deps = [
+        ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
+        "//jaxlib:handle_pool",
+        "//jaxlib:kernel_helpers",
+        "@xla//xla/service:custom_call_status",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/cuda:cudnn",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
         "@local_config_cuda//cuda:cuda_headers",
-        "@pybind11",
+    ],
+)
+
+pybind_extension(
+    name = "_rnn",
+    srcs = ["//jaxlib/gpu:rnn.cc"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    module_name = "_rnn",
+    deps = [
+        ":cuda_vendor",
+        ":cudnn_rnn_kernels",
+        "//jaxlib:absl_status_casters",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings:str_format",
+        "@nanobind",
     ],
 )
 
 cc_library(
     name = "cusolver_kernels",
-    srcs = ["cusolver_kernels.cc"],
-    hdrs = ["cusolver_kernels.h"],
+    srcs = ["//jaxlib/gpu:solver_kernels.cc"],
+    hdrs = ["//jaxlib/gpu:solver_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         "//jaxlib:handle_pool",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cusolver_lib",
+        "@xla//xla/service:custom_call_status",
+        "@tsl//tsl/cuda:cusolver",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",
@@ -108,38 +183,48 @@ cc_library(
 )
 
 pybind_extension(
-    name = "_cusolver",
-    srcs = ["cusolver.cc"],
+    name = "_solver",
+    srcs = ["//jaxlib/gpu:solver.cc"],
     copts = [
         "-fexceptions",
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    module_name = "_cusolver",
+    linkopts = select({
+        "@xla//xla/python:use_jax_cuda_pip_rpaths": [
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cuda_runtime/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cusolver/lib",
+        ],
+        "//conditions:default": [],
+    }),
+    module_name = "_solver",
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         ":cusolver_kernels",
-        "//jaxlib:kernel_pybind11_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cudart_stub",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cusolver_lib",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/cuda:cusolver",
+        "@tsl//tsl/python/lib/core:numpy",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings:str_format",
         "@local_config_cuda//cuda:cuda_headers",
-        "@pybind11",
+        "@nanobind",
     ],
 )
 
 cc_library(
     name = "cusparse_kernels",
-    srcs = ["cusparse_kernels.cc"],
-    hdrs = ["cusparse_kernels.h"],
+    srcs = ["//jaxlib/gpu:sparse_kernels.cc"],
+    hdrs = ["//jaxlib/gpu:sparse_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         "//jaxlib:handle_pool",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cudart_stub",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cusparse_lib",
+        "@xla//xla/service:custom_call_status",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/cuda:cusparse",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",
@@ -148,20 +233,29 @@ cc_library(
 )
 
 pybind_extension(
-    name = "_cusparse",
-    srcs = ["cusparse.cc"],
+    name = "_sparse",
+    srcs = ["//jaxlib/gpu:sparse.cc"],
     copts = [
         "-fexceptions",
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    module_name = "_cusparse",
+    linkopts = select({
+        "@xla//xla/python:use_jax_cuda_pip_rpaths": [
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cuda_runtime/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cusparse/lib",
+        ],
+        "//conditions:default": [],
+    }),
+    module_name = "_sparse",
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         ":cusparse_kernels",
-        "//jaxlib:kernel_pybind11_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cudart_stub",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cusparse_lib",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/cuda:cusparse",
+        "@tsl//tsl/python/lib/core:numpy",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
@@ -172,21 +266,22 @@ pybind_extension(
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@local_config_cuda//cuda:cuda_headers",
-        "@pybind11",
+        "@nanobind",
     ],
 )
 
 cc_library(
     name = "cuda_lu_pivot_kernels",
     srcs = [
-        "cuda_lu_pivot_kernels.cc",
+        "//jaxlib/gpu:lu_pivot_kernels.cc",
     ],
-    hdrs = ["cuda_lu_pivot_kernels.h"],
+    hdrs = ["//jaxlib/gpu:lu_pivot_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
         ":cuda_lu_pivot_kernels_impl",
+        ":cuda_vendor",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
+        "@xla//xla/service:custom_call_status",
         "@local_config_cuda//cuda:cuda_headers",
     ],
 )
@@ -194,48 +289,51 @@ cc_library(
 cuda_library(
     name = "cuda_lu_pivot_kernels_impl",
     srcs = [
-        "cuda_lu_pivot_kernels.cu.cc",
+        "//jaxlib/gpu:lu_pivot_kernels.cu.cc",
     ],
-    hdrs = ["cuda_lu_pivot_kernels.h"],
+    hdrs = ["//jaxlib/gpu:lu_pivot_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
+        "@xla//xla/service:custom_call_status",
         "@local_config_cuda//cuda:cuda_headers",
     ],
 )
 
 pybind_extension(
-    name = "_cuda_linalg",
-    srcs = ["cuda_linalg.cc"],
+    name = "_linalg",
+    srcs = ["//jaxlib/gpu:linalg.cc"],
     copts = [
         "-fexceptions",
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    module_name = "_cuda_linalg",
+    module_name = "_linalg",
     deps = [
         ":cuda_gpu_kernel_helpers",
         ":cuda_lu_pivot_kernels",
         ":cuda_lu_pivot_kernels_impl",
-        "//jaxlib:kernel_pybind11_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cudart_stub",
+        ":cuda_vendor",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cudart",
         "@local_config_cuda//cuda:cuda_headers",
-        "@pybind11",
+        "@nanobind",
     ],
 )
 
 cc_library(
     name = "cuda_prng_kernels",
     srcs = [
-        "cuda_prng_kernels.cc",
+        "//jaxlib/gpu:prng_kernels.cc",
     ],
-    hdrs = ["cuda_prng_kernels.h"],
+    hdrs = ["//jaxlib/gpu:prng_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
         ":cuda_prng_kernels_impl",
+        ":cuda_vendor",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
+        "@xla//xla/service:custom_call_status",
         "@local_config_cuda//cuda:cuda_headers",
     ],
 )
@@ -243,58 +341,207 @@ cc_library(
 cuda_library(
     name = "cuda_prng_kernels_impl",
     srcs = [
-        "cuda_prng_kernels.cu.cc",
+        "//jaxlib/gpu:prng_kernels.cu.cc",
     ],
-    hdrs = ["cuda_prng_kernels.h"],
+    hdrs = ["//jaxlib/gpu:prng_kernels.h"],
     deps = [
         ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
         "//jaxlib:kernel_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_status",
+        "@xla//xla/service:custom_call_status",
         "@local_config_cuda//cuda:cuda_headers",
     ],
 )
 
 pybind_extension(
-    name = "_cuda_prng",
-    srcs = ["cuda_prng.cc"],
+    name = "_prng",
+    srcs = ["//jaxlib/gpu:prng.cc"],
     copts = [
         "-fexceptions",
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    module_name = "_cuda_prng",
+    module_name = "_prng",
     deps = [
         ":cuda_gpu_kernel_helpers",
         ":cuda_prng_kernels",
-        "//jaxlib:kernel_pybind11_helpers",
-        "@org_tensorflow//tensorflow/compiler/xla/stream_executor/cuda:cudart_stub",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cudart",
         "@local_config_cuda//cuda:cuda_headers",
-        "@pybind11",
+        "@nanobind",
     ],
 )
 
 cc_library(
     name = "cuda_gpu_kernels",
-    srcs = ["cuda_gpu_kernels.cc"],
+    srcs = ["//jaxlib/gpu:gpu_kernels.cc"],
     visibility = ["//visibility:public"],
     deps = [
         ":cublas_kernels",
         ":cuda_lu_pivot_kernels",
         ":cuda_prng_kernels",
+        ":cuda_vendor",
         ":cusolver_kernels",
         ":cusparse_kernels",
-        "@org_tensorflow//tensorflow/compiler/xla/service:custom_call_target_registry",
+        ":triton_kernels",
+        "@xla//xla/service:custom_call_target_registry",
     ],
     alwayslink = 1,
+)
+
+cc_library(
+    name = "triton_kernels",
+    srcs = ["//jaxlib/gpu:triton_kernels.cc"],
+    hdrs = ["//jaxlib/gpu:triton_kernels.h"],
+    deps = [
+        ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
+        ":triton_utils",
+        "//jaxlib/gpu:triton_cc_proto",
+        "@xla//xla/service:custom_call_status",
+        "@xla//xla/stream_executor/gpu:asm_compiler",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/platform:env",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+cc_library(
+    name = "triton_utils",
+    srcs = ["//jaxlib/gpu:triton_utils.cc"],
+    hdrs = ["//jaxlib/gpu:triton_utils.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
+        "//jaxlib/gpu:triton_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@zlib",
+    ],
+)
+
+pybind_extension(
+    name = "_triton",
+    srcs = ["//jaxlib/gpu:triton.cc"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    linkopts = select({
+        "@xla//xla/python:use_jax_cuda_pip_rpaths": [
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cuda_runtime/lib",
+        ],
+        "//conditions:default": [],
+    }),
+    module_name = "_triton",
+    deps = [
+        ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
+        ":triton_kernels",
+        ":triton_utils",
+        "//jaxlib:absl_status_casters",
+        "//jaxlib:kernel_nanobind_helpers",
+        "//jaxlib/gpu:triton_cc_proto",
+        "@com_google_absl//absl/status:statusor",
+        "@nanobind",
+    ],
+)
+
+cc_library(
+    name = "versions_helpers",
+    srcs = ["versions_helpers.cc"],
+    hdrs = ["versions_helpers.h"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
+        "//jaxlib:absl_status_casters",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cublas",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/cuda:cudnn",
+        "@tsl//tsl/cuda:cufft",
+        "@tsl//tsl/cuda:cupti",
+        "@tsl//tsl/cuda:cusolver",
+        "@tsl//tsl/cuda:cusparse",
+    ],
+)
+
+pybind_extension(
+    name = "_versions",
+    srcs = ["versions.cc"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    linkopts = select({
+        "@xla//xla/python:use_jax_cuda_pip_rpaths": [
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cuda_cupti/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cuda_runtime/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cublas/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cufft/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cudnn/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cusolver/lib",
+            "-Wl,-rpath,$$ORIGIN/../../nvidia/cusparse/lib",
+        ],
+        "//conditions:default": [],
+    }),
+    module_name = "_versions",
+    deps = [
+        ":cuda_gpu_kernel_helpers",
+        ":cuda_vendor",
+        ":versions_helpers",
+        "//jaxlib:absl_status_casters",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@tsl//tsl/cuda:cublas",
+        "@tsl//tsl/cuda:cudart",
+        "@tsl//tsl/cuda:cudnn",
+        "@tsl//tsl/cuda:cufft",
+        "@tsl//tsl/cuda:cupti",
+        "@tsl//tsl/cuda:cusolver",
+        "@tsl//tsl/cuda:cusparse",
+        "@com_google_absl//absl/status:statusor",
+        "@nanobind",
+    ],
 )
 
 py_library(
     name = "cuda_gpu_support",
     deps = [
-        ":_cublas",
-        ":_cuda_linalg",
-        ":_cuda_prng",
-        ":_cusolver",
-        ":_cusparse",
+        ":_blas",
+        ":_linalg",
+        ":_prng",
+        ":_rnn",
+        ":_solver",
+        ":_sparse",
+        ":_triton",
+        ":_versions",
     ],
+)
+
+# We cannot nest select and if_cuda_is_configured so we introduce
+# a standalone py_library target.
+py_library(
+    name = "gpu_only_test_deps",
+    # `if_cuda_is_configured` will default to `[]`.
+    deps = if_cuda_is_configured([
+        ":cuda_gpu_support",
+        "//jaxlib:cuda_plugin_extension",
+    ]),
 )

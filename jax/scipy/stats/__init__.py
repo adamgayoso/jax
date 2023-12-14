@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax.scipy.stats import bernoulli as bernoulli
 from jax.scipy.stats import beta as beta
+from jax.scipy.stats import binom as binom
 from jax.scipy.stats import cauchy as cauchy
 from jax.scipy.stats import dirichlet as dirichlet
 from jax.scipy.stats import expon as expon
@@ -32,5 +36,8 @@ from jax.scipy.stats import uniform as uniform
 from jax.scipy.stats import chi2 as chi2
 from jax.scipy.stats import betabinom as betabinom
 from jax.scipy.stats import gennorm as gennorm
+from jax.scipy.stats import truncnorm as truncnorm
 from jax._src.scipy.stats.kde import gaussian_kde as gaussian_kde
-from jax._src.scipy.stats._core import mode as mode
+from jax._src.scipy.stats._core import mode as mode, rankdata as rankdata
+from jax.scipy.stats import vonmises as vonmises
+from jax.scipy.stats import wrapcauchy as wrapcauchy

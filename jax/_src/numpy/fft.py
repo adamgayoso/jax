@@ -12,17 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
+from collections.abc import Sequence
 import operator
-from typing import Optional, Sequence, Union
 import numpy as np
 
 from jax import dtypes
 from jax import lax
 from jax._src.lib import xla_client
 from jax._src.util import safe_zip
-from jax._src.numpy.util import _wraps
+from jax._src.numpy.util import check_arraylike, _wraps
 from jax._src.numpy import lax_numpy as jnp
+from jax._src.numpy import ufuncs, reductions
 from jax._src.typing import Array, ArrayLike
 
 Shape = Sequence[int]
@@ -31,19 +33,18 @@ def _fft_norm(s: Array, func_name: str, norm: str) -> Array:
   if norm == "backward":
     return jnp.array(1)
   elif norm == "ortho":
-    return jnp.sqrt(jnp.prod(s)) if func_name.startswith('i') else 1/jnp.sqrt(jnp.prod(s))
+    return ufuncs.sqrt(reductions.prod(s)) if func_name.startswith('i') else 1/ufuncs.sqrt(reductions.prod(s))
   elif norm == "forward":
-    return jnp.prod(s) if func_name.startswith('i') else 1/jnp.prod(s)
+    return reductions.prod(s) if func_name.startswith('i') else 1/reductions.prod(s)
   raise ValueError(f'Invalid norm value {norm}; should be "backward",'
                     '"ortho" or "forward".')
 
 
 def _fft_core(func_name: str, fft_type: xla_client.FftType, a: ArrayLike,
-              s: Optional[Shape], axes: Optional[Sequence[int]],
-              norm: Optional[str]) -> Array:
+              s: Shape | None, axes: Sequence[int] | None,
+              norm: str | None) -> Array:
   full_name = "jax.numpy.fft." + func_name
-
-  # TODO(jakevdp): call check_arraylike
+  check_arraylike(full_name, a)
   arr = jnp.asarray(a)
 
   if s is not None:
@@ -105,34 +106,34 @@ def _fft_core(func_name: str, fft_type: xla_client.FftType, a: ArrayLike,
 
 
 @_wraps(np.fft.fftn)
-def fftn(a: ArrayLike, s: Optional[Shape] = None,
-         axes: Optional[Sequence[int]] = None,
-         norm: Optional[str] = None) -> Array:
+def fftn(a: ArrayLike, s: Shape | None = None,
+         axes: Sequence[int] | None = None,
+         norm: str | None = None) -> Array:
   return _fft_core('fftn', xla_client.FftType.FFT, a, s, axes, norm)
 
 
 @_wraps(np.fft.ifftn)
-def ifftn(a: ArrayLike, s: Optional[Shape] = None,
-          axes: Optional[Sequence[int]] = None,
-          norm: Optional[str] = None) -> Array:
+def ifftn(a: ArrayLike, s: Shape | None = None,
+          axes: Sequence[int] | None = None,
+          norm: str | None = None) -> Array:
   return _fft_core('ifftn', xla_client.FftType.IFFT, a, s, axes, norm)
 
 
 @_wraps(np.fft.rfftn)
-def rfftn(a: ArrayLike, s: Optional[Shape] = None,
-          axes: Optional[Sequence[int]] = None,
-          norm: Optional[str] = None) -> Array:
+def rfftn(a: ArrayLike, s: Shape | None = None,
+          axes: Sequence[int] | None = None,
+          norm: str | None = None) -> Array:
   return _fft_core('rfftn', xla_client.FftType.RFFT, a, s, axes, norm)
 
 
 @_wraps(np.fft.irfftn)
-def irfftn(a: ArrayLike, s: Optional[Shape] = None,
-           axes: Optional[Sequence[int]] = None,
-           norm: Optional[str] = None) -> Array:
+def irfftn(a: ArrayLike, s: Shape | None = None,
+           axes: Sequence[int] | None = None,
+           norm: str | None = None) -> Array:
   return _fft_core('irfftn', xla_client.FftType.IRFFT, a, s, axes, norm)
 
 
-def _axis_check_1d(func_name: str, axis: Optional[int]):
+def _axis_check_1d(func_name: str, axis: int | None):
   full_name = "jax.numpy.fft." + func_name
   if isinstance(axis, (list, tuple)):
     raise ValueError(
@@ -141,8 +142,8 @@ def _axis_check_1d(func_name: str, axis: Optional[int]):
     )
 
 def _fft_core_1d(func_name: str, fft_type: xla_client.FftType,
-                 a: ArrayLike, n: Optional[int], axis: Optional[int],
-                 norm: Optional[str]) -> Array:
+                 a: ArrayLike, n: int | None, axis: int | None,
+                 norm: str | None) -> Array:
   _axis_check_1d(func_name, axis)
   axes = None if axis is None else [axis]
   s = None if n is None else [n]
@@ -150,52 +151,52 @@ def _fft_core_1d(func_name: str, fft_type: xla_client.FftType,
 
 
 @_wraps(np.fft.fft)
-def fft(a: ArrayLike, n: Optional[int] = None,
-        axis: int = -1, norm: Optional[str] = None) -> Array:
+def fft(a: ArrayLike, n: int | None = None,
+        axis: int = -1, norm: str | None = None) -> Array:
   return _fft_core_1d('fft', xla_client.FftType.FFT, a, n=n, axis=axis,
                       norm=norm)
 
 @_wraps(np.fft.ifft)
-def ifft(a: ArrayLike, n: Optional[int] = None,
-         axis: int = -1, norm: Optional[str] = None) -> Array:
+def ifft(a: ArrayLike, n: int | None = None,
+         axis: int = -1, norm: str | None = None) -> Array:
   return _fft_core_1d('ifft', xla_client.FftType.IFFT, a, n=n, axis=axis,
                       norm=norm)
 
 @_wraps(np.fft.rfft)
-def rfft(a: ArrayLike, n: Optional[int] = None,
-         axis: int = -1, norm: Optional[str] = None) -> Array:
+def rfft(a: ArrayLike, n: int | None = None,
+         axis: int = -1, norm: str | None = None) -> Array:
   return _fft_core_1d('rfft', xla_client.FftType.RFFT, a, n=n, axis=axis,
                       norm=norm)
 
 @_wraps(np.fft.irfft)
-def irfft(a: ArrayLike, n: Optional[int] = None,
-          axis: int = -1, norm: Optional[str] = None) -> Array:
+def irfft(a: ArrayLike, n: int | None = None,
+          axis: int = -1, norm: str | None = None) -> Array:
   return _fft_core_1d('irfft', xla_client.FftType.IRFFT, a, n=n, axis=axis,
                       norm=norm)
 
 @_wraps(np.fft.hfft)
-def hfft(a: ArrayLike, n: Optional[int] = None,
-         axis: int = -1, norm: Optional[str] = None) -> Array:
-  conj_a = jnp.conj(a)
+def hfft(a: ArrayLike, n: int | None = None,
+         axis: int = -1, norm: str | None = None) -> Array:
+  conj_a = ufuncs.conj(a)
   _axis_check_1d('hfft', axis)
   nn = (conj_a.shape[axis] - 1) * 2 if n is None else n
   return _fft_core_1d('hfft', xla_client.FftType.IRFFT, conj_a, n=n, axis=axis,
                       norm=norm) * nn
 
 @_wraps(np.fft.ihfft)
-def ihfft(a: ArrayLike, n: Optional[int] = None,
-          axis: int = -1, norm: Optional[str] = None) -> Array:
+def ihfft(a: ArrayLike, n: int | None = None,
+          axis: int = -1, norm: str | None = None) -> Array:
   _axis_check_1d('ihfft', axis)
   arr = jnp.asarray(a)
   nn = arr.shape[axis] if n is None else n
   output = _fft_core_1d('ihfft', xla_client.FftType.RFFT, arr, n=n, axis=axis,
                         norm=norm)
-  return jnp.conj(output) * (1 / nn)
+  return ufuncs.conj(output) * (1 / nn)
 
 
 def _fft_core_2d(func_name: str, fft_type: xla_client.FftType, a: ArrayLike,
-                 s: Optional[Shape], axes: Sequence[int],
-                 norm: Optional[str]) -> Array:
+                 s: Shape | None, axes: Sequence[int],
+                 norm: str | None) -> Array:
   full_name = "jax.numpy.fft." + func_name
   if len(axes) != 2:
     raise ValueError(
@@ -206,33 +207,37 @@ def _fft_core_2d(func_name: str, fft_type: xla_client.FftType, a: ArrayLike,
 
 
 @_wraps(np.fft.fft2)
-def fft2(a: ArrayLike, s: Optional[Shape] = None, axes: Sequence[int] = (-2,-1),
-         norm: Optional[str] = None) -> Array:
+def fft2(a: ArrayLike, s: Shape | None = None, axes: Sequence[int] = (-2,-1),
+         norm: str | None = None) -> Array:
   return _fft_core_2d('fft2', xla_client.FftType.FFT, a, s=s, axes=axes,
                       norm=norm)
 
 @_wraps(np.fft.ifft2)
-def ifft2(a: ArrayLike, s: Optional[Shape] = None, axes: Sequence[int] = (-2,-1),
-          norm: Optional[str] = None) -> Array:
+def ifft2(a: ArrayLike, s: Shape | None = None, axes: Sequence[int] = (-2,-1),
+          norm: str | None = None) -> Array:
   return _fft_core_2d('ifft2', xla_client.FftType.IFFT, a, s=s, axes=axes,
                       norm=norm)
 
 @_wraps(np.fft.rfft2)
-def rfft2(a: ArrayLike, s: Optional[Shape] = None, axes: Sequence[int] = (-2,-1),
-          norm: Optional[str] = None) -> Array:
+def rfft2(a: ArrayLike, s: Shape | None = None, axes: Sequence[int] = (-2,-1),
+          norm: str | None = None) -> Array:
   return _fft_core_2d('rfft2', xla_client.FftType.RFFT, a, s=s, axes=axes,
                       norm=norm)
 
 @_wraps(np.fft.irfft2)
-def irfft2(a: ArrayLike, s: Optional[Shape] = None, axes: Sequence[int] = (-2,-1),
-           norm: Optional[str] = None) -> Array:
+def irfft2(a: ArrayLike, s: Shape | None = None, axes: Sequence[int] = (-2,-1),
+           norm: str | None = None) -> Array:
   return _fft_core_2d('irfft2', xla_client.FftType.IRFFT, a, s=s, axes=axes,
                       norm=norm)
 
 
-@_wraps(np.fft.fftfreq)
-def fftfreq(n: int, d: ArrayLike = 1.0) -> Array:
-  dtype = dtypes.canonicalize_dtype(jnp.float_)
+@_wraps(np.fft.fftfreq, extra_params="""
+dtype : Optional
+    The dtype of the returned frequencies. If not specified, JAX's default
+    floating point dtype will be used.
+""")
+def fftfreq(n: int, d: ArrayLike = 1.0, *, dtype=None) -> Array:
+  dtype = dtype or dtypes.canonicalize_dtype(jnp.float_)
   if isinstance(n, (list, tuple)):
     raise ValueError(
           "The n argument of jax.numpy.fft.fftfreq only takes an int. "
@@ -258,12 +263,16 @@ def fftfreq(n: int, d: ArrayLike = 1.0) -> Array:
     # k[(n - 1) // 2 + 1:] = jnp.arange(-(n - 1) // 2, -1)
     k = k.at[(n - 1) // 2 + 1:].set(jnp.arange(-(n - 1) // 2, 0, dtype=dtype))
 
-  return k / (d * n)
+  return k / jnp.array(d * n, dtype=dtype)
 
 
-@_wraps(np.fft.rfftfreq)
-def rfftfreq(n: int, d: ArrayLike = 1.0) -> Array:
-  dtype = dtypes.canonicalize_dtype(jnp.float_)
+@_wraps(np.fft.rfftfreq, extra_params="""
+dtype : Optional
+    The dtype of the returned frequencies. If not specified, JAX's default
+    floating point dtype will be used.
+""")
+def rfftfreq(n: int, d: ArrayLike = 1.0, *, dtype=None) -> Array:
+  dtype = dtype or dtypes.canonicalize_dtype(jnp.float_)
   if isinstance(n, (list, tuple)):
     raise ValueError(
           "The n argument of jax.numpy.fft.rfftfreq only takes an int. "
@@ -280,13 +289,14 @@ def rfftfreq(n: int, d: ArrayLike = 1.0) -> Array:
   else:
     k = jnp.arange(0, (n - 1) // 2 + 1, dtype=dtype)
 
-  return k / (d * n)
+  return k / jnp.array(d * n, dtype=dtype)
 
 
 @_wraps(np.fft.fftshift)
-def fftshift(x: ArrayLike, axes: Union[None, int, Sequence[int]] = None) -> Array:
+def fftshift(x: ArrayLike, axes: None | int | Sequence[int] = None) -> Array:
+  check_arraylike("fftshift", x)
   x = jnp.asarray(x)
-  shift: Union[int, Sequence[int]]
+  shift: int | Sequence[int]
   if axes is None:
     axes = tuple(range(x.ndim))
     shift = [dim // 2 for dim in x.shape]
@@ -299,9 +309,10 @@ def fftshift(x: ArrayLike, axes: Union[None, int, Sequence[int]] = None) -> Arra
 
 
 @_wraps(np.fft.ifftshift)
-def ifftshift(x: ArrayLike, axes: Union[None, int, Sequence[int]] = None) -> Array:
+def ifftshift(x: ArrayLike, axes: None | int | Sequence[int] = None) -> Array:
+  check_arraylike("ifftshift", x)
   x = jnp.asarray(x)
-  shift: Union[int, Sequence[int]]
+  shift: int | Sequence[int]
   if axes is None:
     axes = tuple(range(x.ndim))
     shift = [-(dim // 2) for dim in x.shape]

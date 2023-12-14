@@ -16,7 +16,7 @@
 
 You likely do not mean to import this module! The optimizers in this library
 are intended as examples only. If you are looking for a fully featured optimizer
-library, we recommend `Optax`_.
+library, two good options are JAXopt_ and Optax_.
 
 This module contains some convenient optimizer definitions, specifically
 initialization and update functions, which can be used with ndarrays or
@@ -85,10 +85,13 @@ Example Usage:
     value, opt_state = step(i, opt_state)
 
 
+.. _JAXopt: https://github.com/google/jaxopt
 .. _Optax: https://github.com/deepmind/optax
 """
 
-from typing import Any, Callable, NamedTuple, Tuple, Union
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple
 
 from collections import namedtuple
 import functools
@@ -137,7 +140,7 @@ class Optimizer(NamedTuple):
 Schedule = Callable[[Step], float]
 
 def optimizer(opt_maker: Callable[...,
-  Tuple[Callable[[Params], State],
+  tuple[Callable[[Params], State],
         Callable[[Step, Updates, Params], Params],
         Callable[[State], Params]]]) -> Callable[..., Optimizer]:
   """Decorator to make an optimizer defined for arrays generalize to containers.
@@ -549,7 +552,7 @@ def piecewise_constant(boundaries: Any, values: Any):
     return values[jnp.sum(i > boundaries)]
   return schedule
 
-def make_schedule(scalar_or_schedule: Union[float, Schedule]) -> Schedule:
+def make_schedule(scalar_or_schedule: float | Schedule) -> Schedule:
   if callable(scalar_or_schedule):
     return scalar_or_schedule
   elif jnp.ndim(scalar_or_schedule) == 0:

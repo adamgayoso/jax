@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from contextlib import contextmanager
 from functools import partial
 import itertools as it
-from typing import Any, List, Optional, Callable, Union, TypeVar
+from typing import Any, Callable, TypeVar, Union
 
 import numpy as np
 from absl.testing import absltest
@@ -24,6 +26,7 @@ from absl.testing import parameterized
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
+from jax._src import core
 from jax._src import dtypes
 from jax._src import test_util as jtu
 from jax import lax
@@ -34,7 +37,7 @@ from jax import vmap
 from jax.interpreters import batching
 from jax.tree_util import register_pytree_node
 
-from jax.config import config
+from jax import config
 config.parse_flags_with_absl()
 
 
@@ -48,6 +51,7 @@ class BatchingTest(jtu.JaxTestCase):
     expected = 3 * np.ones(4)
     self.assertAllClose(ans, expected, check_dtypes=False)
 
+  @jax.default_matmul_precision("float32")
   def testNestedBatchingMatMat(self):
     matvec = vmap(jnp.vdot, in_axes=(0, None))
     matmat = vmap(matvec, in_axes=(None, 1), out_axes=1)
@@ -58,9 +62,7 @@ class BatchingTest(jtu.JaxTestCase):
 
     ans = matmat(A, B)
     expected = np.dot(A, B)
-    self.assertAllClose(
-        ans, expected, check_dtypes=False,
-        rtol={np.float32:5e-2} if jtu.device_under_test() == "tpu" else None)
+    self.assertAllClose(ans, expected, check_dtypes=False)
 
     jaxpr = make_jaxpr(matmat)(A, B)
     self.assertLen(jaxpr.jaxpr.eqns, 1)
@@ -97,6 +99,7 @@ class BatchingTest(jtu.JaxTestCase):
       self.assertEqual(dW.shape, (batch_size,) + W.shape)
       self.assertEqual(db.shape, (batch_size,) + b.shape)
 
+  @jax.default_matmul_precision("float32")
   def testJacobians(self):
     def jacbwd(f, x):
       y, pullback = vjp(f, x)
@@ -117,8 +120,7 @@ class BatchingTest(jtu.JaxTestCase):
     f = lambda x: jnp.tanh(jnp.dot(A, x) + b)
 
     x = R(3)
-    self.assertAllClose(jacfwd(f, x), jacbwd(f, x), check_dtypes=False,
-                        rtol={np.float32:1e-2} if jtu.device_under_test() == "tpu" else None)
+    self.assertAllClose(jacfwd(f, x), jacbwd(f, x), check_dtypes=False)
 
   def testBatchOfCompile(self):
     side = []
@@ -200,6 +202,7 @@ class BatchingTest(jtu.JaxTestCase):
     expected_ans = x > 1.0
     self.assertAllClose(ans, expected_ans)
 
+  @jax.default_matmul_precision("float32")
   def testNpMaximumPerExampleGrad(self):
     R = self.rng().randn
     x = R(10, 5)
@@ -217,10 +220,10 @@ class BatchingTest(jtu.JaxTestCase):
           jnp.maximum(jnp.dot(W_t, jnp.transpose(x_ex)), 0.0), x_ex)
       expected_ans = jnp.transpose(expected_ans)
 
-      self.assertAllClose(
-          ans[i], expected_ans, check_dtypes=False,
-          rtol={np.float32:5e-2} if jtu.device_under_test() == "tpu" else None)
+      self.assertAllClose(ans[i], expected_ans, check_dtypes=False)
 
+  # Replace the default TF32 with float32 in order to make it pass on A100
+  @jax.default_matmul_precision("float32")
   def testDotGeneral(self):
     R = self.rng().randn
 
@@ -402,6 +405,7 @@ class BatchingTest(jtu.JaxTestCase):
     expected[np.arange(10), idx] = y
     self.assertAllClose(ans, expected, check_dtypes=False)
 
+  @jax.legacy_prng_key('allow')
   def testRandom(self):
     seeds = vmap(random.PRNGKey)(np.arange(10))
     ans = vmap(partial(random.normal, shape=(3, 2)))(seeds)
@@ -567,7 +571,7 @@ class BatchingTest(jtu.JaxTestCase):
   def testCumProd(self):
    x = jnp.arange(9).reshape(3, 3) + 1
    y = vmap(lambda x: jnp.cumprod(x, axis=-1))(x)
-   self.assertAllClose(np.cumprod(x, axis=1, dtype=int), y)
+   self.assertAllClose(jnp.cumprod(x, axis=1), y)
 
   def testSelect(self):
     pred = np.array([True, False])
@@ -630,7 +634,7 @@ class BatchingTest(jtu.JaxTestCase):
     ans = vmap(lax.linalg.triangular_solve, in_axes=(1, 2))(a, b)
     expected = np.stack(
       [lax.linalg.triangular_solve(a[:, i], b[..., i]) for i in range(10)])
-    self.assertAllClose(ans, expected)
+    self.assertAllClose(ans, expected, atol=1e-5, rtol=1e-5)
 
     ans = vmap(lax.linalg.triangular_solve, in_axes=(None, 2))(a[:, 0], b)
     expected = np.stack(
@@ -640,7 +644,34 @@ class BatchingTest(jtu.JaxTestCase):
     ans = vmap(lax.linalg.triangular_solve, in_axes=(1, None))(a, b[..., 0])
     expected = np.stack(
       [lax.linalg.triangular_solve(a[:, i], b[..., 0]) for i in range(10)])
+    self.assertAllClose(ans, expected, atol=1e-5, rtol=1e-5)
+
+  def testLaxLinalgTridiagonalSolve(self):
+    dl = self.rng().randn(4, 10).astype(np.float32)
+    d = self.rng().randn(4, 10).astype(np.float32) + 1.
+    du = self.rng().randn(4, 10).astype(np.float32)
+    b = self.rng().randn(4, 5, 10).astype(np.float32)
+
+    ans = vmap(lax.linalg.tridiagonal_solve, in_axes=(1, 1, 1, 2))(dl, d, du, b)
+    expected = np.stack(
+        [lax.linalg.tridiagonal_solve(
+            dl[:, i], d[:, i], du[:, i], b[..., i]) for i in range(10)])
+    self.assertAllClose(ans, expected, atol=1e-5, rtol=1e-5)
+
+    ans = vmap(lax.linalg.tridiagonal_solve, in_axes=(None, None, None, 2))(
+        dl[:, 0], d[:, 0], du[:, 0], b)
+    expected = np.stack(
+        [lax.linalg.tridiagonal_solve(
+            dl[:, 0], d[:, 0], du[:, 0], b[..., i]) for i in range(10)])
     self.assertAllClose(ans, expected)
+
+    ans = vmap(lax.linalg.tridiagonal_solve, in_axes=(1, 1, 1, None))(
+        dl, d, du, b[..., 0])
+    expected = np.stack(
+        [lax.linalg.tridiagonal_solve(
+            dl[:, i], d[:, i], du[:, i], b[..., 0]) for i in range(10)])
+    self.assertAllClose(ans, expected, atol=1e-5, rtol=1e-5)
+
 
   @parameterized.named_parameters(
       {"testcase_name": "_shape={}_axis={}_idxs={}_dnums={}_slice_sizes={}".format(
@@ -918,6 +949,7 @@ class BatchingTest(jtu.JaxTestCase):
 
     _ = hessian(f)(R)  # don't crash on UnshapedArray
 
+  @jax.legacy_prng_key('allow')
   def testIssue489(self):
     # https://github.com/google/jax/issues/489
     def f(key):
@@ -930,7 +962,8 @@ class BatchingTest(jtu.JaxTestCase):
       u, _ = lax.while_loop(lambda uk: uk[0] > 0.5, body_fn, (1., key))
       return u
 
-    print(vmap(f)(random.split(random.PRNGKey(0), 2)))  # no crash
+    with jax.enable_key_reuse_checks(False):
+      print(vmap(f)(random.split(random.PRNGKey(0), 2)))  # no crash
 
   def testEmptyTuples(self):
     # Ensure there is no crash when a vectorized input contains empty tuples.
@@ -1178,7 +1211,7 @@ class BatchingTest(jtu.JaxTestCase):
     f = vmap(jax.grad(lambda x: -lax.psum(x, 'i')), out_axes=None, axis_name='i')
     self.assertEqual(
         f(a),
-        jax.core.jaxpr_as_fun(jax.make_jaxpr(f)(a))(a)[0])
+        core.jaxpr_as_fun(jax.make_jaxpr(f)(a))(a)[0])
 
   def testAllGatherToUnmapped(self):
     def f(x):
@@ -1257,6 +1290,11 @@ class BatchingTest(jtu.JaxTestCase):
     expected = bulk_op(x, axis=axis)
     self.assertAllClose(ans, expected, check_dtypes=False)
 
+  def testReduceScatterAutodiff(self):
+    f = vmap(partial(lax.psum_scatter, axis_name='i'), axis_name='i')
+    x = self.rng().randn(3, 3, 4)
+    jtu.check_grads(f, (x,), 2, ["fwd", "rev"], 1e-2, 1e-2, eps=1.)
+
   def testNonJaxTypedOutput(self):
     with self.assertRaisesRegex(
       TypeError, "Output from batched function.*is not a valid JAX type"):
@@ -1296,11 +1334,11 @@ class BatchingTest(jtu.JaxTestCase):
 
 Array = Any
 ArrayElt = Any
-Int = Union[int, jax.core.Tracer]
+Int = Union[int, core.Tracer]
 
 # Can't used NamedTuple here b/c those are pytrees
 class NamedArray:
-  names: List[str]
+  names: list[str]
   data: Array
 
   def __init__(self, names, data):
@@ -1312,10 +1350,10 @@ class NamedArray:
     return f'NamedArray(names={self.names}, data={self.data})'
 
 class NamedMapSpec:
-  name: Optional[str]
-  axis: Optional[int]
+  name: str | None
+  axis: int | None
 
-  def __init__(self, name: str, axis: Optional[int]):
+  def __init__(self, name: str, axis: int | None):
     assert (name is None) == (axis is None)
     self.name = name
     self.axis = axis
@@ -1330,7 +1368,7 @@ register_pytree_node(NamedArray,
                      lambda names, xs: NamedArray(names, xs[0]))
 
 
-def named_to_elt(cont: Callable[[Array, Optional[int]], ArrayElt],
+def named_to_elt(cont: Callable[[Array, int | None], ArrayElt],
                  _: Int, val: NamedArray, spec: NamedMapSpec) -> NamedArray:
   if spec.name is None:
     return val
@@ -1340,7 +1378,7 @@ def named_to_elt(cont: Callable[[Array, Optional[int]], ArrayElt],
     elt = cont(val.data, spec.axis)
     return NamedArray(elt_names, elt)
 
-def named_from_elt(cont: Callable[[int, ArrayElt, Optional[int]], Array],
+def named_from_elt(cont: Callable[[int, ArrayElt, int | None], Array],
                    axis_size: int, elt: NamedArray, annotation: NamedMapSpec
                    ) -> NamedArray:
   data = cont(axis_size, elt.data, annotation.axis)
@@ -1361,11 +1399,11 @@ def temporarily_register_named_array_vmappable():
 
 a = TypeVar('a')
 
-def list_pop(lst: List[a], idx: int) -> a:
+def list_pop(lst: list[a], idx: int) -> a:
   lst = list(lst)
   return lst, lst.pop(idx)
 
-def list_insert(lst: List[a], idx: int, val: a) -> List[a]:
+def list_insert(lst: list[a], idx: int, val: a) -> list[a]:
   lst = list(lst)
   lst.insert(idx, val)
   return lst

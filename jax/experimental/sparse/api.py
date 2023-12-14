@@ -29,11 +29,14 @@ computed efficiently via cusparse/hipsparse.
 Further down are some examples of potential high-level wrappers for sparse objects.
 (API should be considered unstable and subject to change).
 """
+
+from __future__ import annotations
+
 from functools import partial
 import operator
+from typing import Optional, Union
 
 import jax
-from jax import core
 from jax import tree_util
 from jax.experimental.sparse._base import JAXSparse
 from jax.experimental.sparse.bcoo import BCOO
@@ -41,10 +44,13 @@ from jax.experimental.sparse.bcsr import BCSR
 from jax.experimental.sparse.coo import COO
 from jax.experimental.sparse.csr import CSR, CSC
 from jax.experimental.sparse.util import _coo_extract
-from jax.interpreters import ad
-from jax.interpreters import batching
 from jax.interpreters import mlir
+
+from jax._src import core
 from jax._src import dtypes
+from jax._src.interpreters import ad
+from jax._src.interpreters import batching
+from jax._src.typing import Array, DTypeLike, Shape
 
 
 #----------------------------------------------------------------------
@@ -53,7 +59,7 @@ from jax._src import dtypes
 todense_p = core.Primitive('todense')
 todense_p.multiple_results = False
 
-def todense(arr):
+def todense(arr: JAXSparse | Array) -> Array:
   """Convert input to a dense matrix. If input is already dense, pass through."""
   bufs, tree = tree_util.tree_flatten(arr)
   return todense_p.bind(*bufs, tree=tree)
@@ -83,12 +89,17 @@ def _todense_transpose(ct, *bufs, tree):
 
   standin = object()
   obj = tree_util.tree_unflatten(tree, [standin] * len(bufs))
-  from jax.experimental.sparse import BCOO, bcoo_extract
+  from jax.experimental.sparse import BCOO, BCSR
+  from jax.experimental.sparse.bcoo import _bcoo_extract
+  from jax.experimental.sparse.bcsr import bcsr_extract
   if obj is standin:
     return (ct,)
   elif isinstance(obj, BCOO):
     _, indices = bufs
-    return bcoo_extract(indices, ct), indices
+    return _bcoo_extract(indices, ct), indices
+  elif isinstance(obj, BCSR):
+    _, indices, indptr = bufs
+    return bcsr_extract(indices, indptr, ct), indices, indptr
   elif isinstance(obj, COO):
     _, row, col = bufs
     return _coo_extract(row, col, ct), row, col
@@ -105,7 +116,8 @@ mlir.register_lowering(todense_p, mlir.lower_fun(
     _todense_impl, multiple_results=False))
 
 
-def empty(shape, dtype=None, index_dtype='int32', sparse_format='bcoo', **kwds):
+def empty(shape: Shape, dtype: DTypeLike | None=None, index_dtype: DTypeLike = 'int32',
+          sparse_format: str = 'bcoo', **kwds) -> JAXSparse:
   """Create an empty sparse array.
 
   Args:
@@ -125,7 +137,8 @@ def empty(shape, dtype=None, index_dtype='int32', sparse_format='bcoo', **kwds):
   return cls._empty(shape, dtype=dtype, index_dtype=index_dtype, **kwds)
 
 
-def eye(N, M=None, k=0, dtype=None, index_dtype='int32', sparse_format='bcoo', **kwds):
+def eye(N: int, M: int | None = None, k: int = 0, dtype: DTypeLike | None = None,
+        index_dtype: DTypeLike = 'int32', sparse_format: str = 'bcoo', **kwds) -> JAXSparse:
   """Create 2D sparse identity matrix.
 
   Args:

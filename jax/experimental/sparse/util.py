@@ -15,18 +15,21 @@
 """Sparse utilities."""
 
 import functools
+from typing import Any, NamedTuple, Union
 
 import numpy as np
 import jax
-from jax import core
 from jax import lax
 from jax import tree_util
 from jax import vmap
+from jax._src import core
 from jax._src import dtypes
 from jax._src import stages
 from jax._src.api_util import flatten_axes
 import jax.numpy as jnp
 from jax.util import safe_zip
+from jax._src.lax.lax import _dot_general_shape_rule, DotDimensionNumbers
+from jax._src.typing import Array
 
 class SparseEfficiencyError(ValueError):
   pass
@@ -37,17 +40,26 @@ class SparseEfficiencyWarning(UserWarning):
 class CuSparseEfficiencyWarning(SparseEfficiencyWarning):
   pass
 
+Shape = tuple[int, ...]
+
+class SparseInfo(NamedTuple):
+  shape: Shape
+  indices_sorted: bool = False
+  unique_indices: bool = False
+
 #--------------------------------------------------------------------
 # utilities
-# TODO: possibly make these primitives, targeting cusparse rountines
+# TODO: possibly make these primitives, targeting cusparse routines
 #       csr2coo/coo2csr/SPDDMM
 
-def _asarray_or_float0(arg):
-  if isinstance(arg, np.ndarray) and arg.dtype == dtypes.float0:
-    return arg
-  return jnp.asarray(arg)
+def nfold_vmap(fun, N, *, broadcasted=True, in_axes=0):
+  """Convenience function to apply (broadcasted) vmap N times."""
+  _vmap = broadcasting_vmap if broadcasted else vmap
+  for _ in range(N):
+    fun = _vmap(fun, in_axes=in_axes)
+  return fun
 
-def _broadcasting_vmap(fun, in_axes=0, out_axes=0):
+def broadcasting_vmap(fun, in_axes=0, out_axes=0):
   @functools.wraps(fun)
   def batched_fun(*args):
     args_flat, in_tree  = tree_util.tree_flatten(args)
@@ -67,43 +79,38 @@ def _broadcasting_vmap(fun, in_axes=0, out_axes=0):
   return batched_fun
 
 @jax.jit
-def _csr_to_coo(indices, indptr):
+def _csr_to_coo(indices: Array, indptr: Array) -> tuple[Array, Array]:
   """Given CSR (indices, indptr) return COO (row, col)"""
   return jnp.cumsum(jnp.zeros_like(indices).at[indptr].add(1)) - 1, indices
 
-def _csr_extract(indices, indptr, mat):
+def _csr_extract(indices: Array, indptr: Array, mat: Array) -> Array:
   """Extract values of dense matrix mat at given CSR indices."""
-  return _coo_extract(*_csr_to_coo(indices, indptr), mat)
+  row, col = _csr_to_coo(indices, indptr)
+  return _coo_extract(row, col, mat)
 
-def _coo_extract(row, col, mat):
+def _coo_extract(row: Array, col: Array, mat: Array) -> Array:
   """Extract values of dense matrix mat at given COO indices."""
   return mat[row, col]
 
-def _count_stored_elements_per_batch(mat, n_batch=0, n_dense=0):
+def _count_stored_elements_per_batch(mat: Array, n_batch: int = 0, n_dense: int = 0) -> Array:
   """Return per-batch number of stored elements (nse) of a dense matrix."""
   mat = jnp.asarray(mat)
   mask = (mat != 0)
   if n_dense > 0:
-    mask = mask.any([-(i + 1) for i in range(n_dense)])
-  mask = mask.sum(list(range(n_batch, mask.ndim)))
+    mask = mask.any(tuple(-(i + 1) for i in range(n_dense)))
+  mask = mask.sum(tuple(range(n_batch, mask.ndim)))
   return mask
 
-def _count_stored_elements(mat, n_batch=0, n_dense=0):
+def _count_stored_elements(mat: Array, n_batch: int = 0, n_dense: int = 0) -> Array:
   """Return the number of stored elements (nse) of the given dense matrix."""
-  return int(_count_stored_elements_per_batch(mat, n_batch, n_dense).max())
+  return _count_stored_elements_per_batch(mat, n_batch, n_dense).max(initial=0)
 
-def _is_pytree_placeholder(*args):
-  # Returns True if the arguments are consistent with being a placeholder within
-  # pytree validation.
-  return all(type(arg) is object for arg in args) or all(arg is None for arg in args)
-
-def _is_aval(*args):
-  return all(isinstance(arg, core.AbstractValue) for arg in args)
-
-def _is_arginfo(*args):
-  return all(isinstance(arg, stages.ArgInfo) for arg in args)
-
-def _safe_asarray(args):
-  if _is_pytree_placeholder(*args) or _is_aval(*args) or _is_arginfo(*args):
-    return args
-  return map(_asarray_or_float0, args)
+def _dot_general_validated_shape(
+    lhs_shape: tuple[int, ...], rhs_shape: tuple[int, ...],
+    dimension_numbers: DotDimensionNumbers) -> tuple[int, ...]:
+  """Validate the inputs and return the output shape."""
+  lhs = core.ShapedArray(lhs_shape, np.float32)
+  rhs = core.ShapedArray(rhs_shape, np.float32)
+  return _dot_general_shape_rule(
+    lhs, rhs, dimension_numbers=dimension_numbers,
+    precision=None, preferred_element_type=None)

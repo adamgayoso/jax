@@ -18,20 +18,22 @@ load(
     "jax_test",
     "jax_test_file_visibility",
     "py_deps",
-    "pytype_library",
     "pytype_test",
 )
+load("@rules_python//python:defs.bzl", "py_test")
 
 licenses(["notice"])
 
-package(default_visibility = ["//visibility:private"])
+package(
+    default_applicable_licenses = [],
+    default_visibility = ["//visibility:private"],
+)
 
 jax_generate_backend_suites()
 
 jax_test(
     name = "api_test",
     srcs = ["api_test.py"],
-    pjrt_c_api_bypass = True,
     shard_count = 10,
 )
 
@@ -46,11 +48,20 @@ jax_test(
     srcs = ["api_util_test.py"],
 )
 
+py_test(
+    name = "array_api_test",
+    srcs = ["array_api_test.py"],
+    deps = [
+        "//jax",
+        "//jax:experimental_array_api",
+    ] + py_deps("absl/testing"),
+)
+
 jax_test(
     name = "array_interoperability_test",
     srcs = ["array_interoperability_test.py"],
     disable_backends = ["tpu"],
-    deps = py_deps("tensorflow"),
+    deps = py_deps("tensorflow_core"),
 )
 
 jax_test(
@@ -61,10 +72,12 @@ jax_test(
     },
 )
 
-jax_test(
-    name = "callback_test",
-    srcs = ["callback_test.py"],
-    deps = ["//jax:callback"],
+py_test(
+    name = "config_test",
+    srcs = ["config_test.py"],
+    deps = [
+        "//jax",
+    ],
 )
 
 jax_test(
@@ -104,23 +117,33 @@ jax_test(
     srcs = ["dtypes_test.py"],
 )
 
-py_test(
+jax_test(
     name = "errors_test",
     srcs = ["errors_test.py"],
-    deps = [
-        "//jax",
-        "//jax:test_util",
+    # No need to test all other configs.
+    enable_configs = [
+        "cpu",
     ],
+)
+
+jax_test(
+    name = "extend_test",
+    srcs = ["extend_test.py"],
+    deps = ["//jax:extend"],
 )
 
 jax_test(
     name = "fft_test",
     srcs = ["fft_test.py"],
     backend_tags = {
-        "tpu": ["notsan"],  # Times out on TPU with tsan.
+        "tpu": [
+            "noasan",
+            "notsan",
+        ],  # Times out on TPU with asan/tsan.
     },
     shard_count = {
         "tpu": 20,
+        "cpu": 20,
     },
 )
 
@@ -149,7 +172,7 @@ jax_test(
     shard_count = {
         "cpu": 10,
         "gpu": 10,
-        "tpu": 10,
+        "tpu": 40,
     },
 )
 
@@ -165,7 +188,13 @@ py_test(
 jax_test(
     name = "xmap_test",
     srcs = ["xmap_test.py"],
-    pjrt_c_api_bypass = True,
+    backend_tags = {
+        "tpu": [
+            "noasan",  # Times out.
+            "nomsan",  # Times out.
+            "notsan",  # Times out.
+        ],
+    },
     shard_count = {
         "cpu": 10,
         "gpu": 4,
@@ -178,12 +207,19 @@ jax_test(
 )
 
 jax_test(
+    name = "memories_test",
+    srcs = ["memories_test.py"],
+    shard_count = {
+        "tpu": 5,
+    },
+)
+
+jax_test(
     name = "pjit_test",
     srcs = ["pjit_test.py"],
     backend_tags = {
         "tpu": ["notsan"],  # Times out under tsan.
     },
-    pjrt_c_api_bypass = True,
     shard_count = {
         "cpu": 5,
         "gpu": 5,
@@ -196,9 +232,38 @@ jax_test(
 )
 
 jax_test(
-    name = "global_device_array_test",
-    srcs = ["global_device_array_test.py"],
+    name = "layout_test",
+    srcs = ["layout_test.py"],
     tags = ["multiaccelerator"],
+)
+
+jax_test(
+    name = "pgle_test",
+    srcs = ["pgle_test.py"],
+    disable_backends = [
+        "cpu",
+        "tpu",
+    ],
+    env = {"XLA_FLAGS": "--xla_dump_to=sponge --xla_gpu_enable_latency_hiding_scheduler=true"},
+    tags = [
+        "config-cuda-only",
+        "multiaccelerator",
+    ],
+    deps = [
+        "//jax:experimental",
+    ],
+)
+
+jax_test(
+    name = "mock_gpu_test",
+    srcs = ["mock_gpu_test.py"],
+    disable_backends = [
+        "cpu",
+        "tpu",
+    ],
+    tags = [
+        "config-cuda-only",
+    ],
     deps = [
         "//jax:experimental",
     ],
@@ -207,24 +272,20 @@ jax_test(
 jax_test(
     name = "array_test",
     srcs = ["array_test.py"],
-    pjrt_c_api_bypass = True,
     tags = ["multiaccelerator"],
     deps = [
         "//jax:experimental",
+        "//jax:internal_test_util",
     ],
 )
 
 jax_test(
-    name = "remote_transfer_test",
-    srcs = ["remote_transfer_test.py"],
-    disable_backends = [
-        "gpu",
-        "cpu",
-    ],
+    name = "aot_test",
+    srcs = ["aot_test.py"],
     tags = ["multiaccelerator"],
     deps = [
         "//jax:experimental",
-    ],
+    ] + py_deps("numpy"),
 )
 
 jax_test(
@@ -236,13 +297,12 @@ jax_test(
         "tpu": 10,
         "iree": 10,
     },
-    deps = py_deps("pil") + py_deps("tensorflow"),
+    deps = py_deps("pil") + py_deps("tensorflow_core"),
 )
 
 jax_test(
     name = "infeed_test",
     srcs = ["infeed_test.py"],
-    pjrt_c_api_bypass = True,
     deps = [
         "//jax:experimental_host_callback",
     ],
@@ -261,12 +321,17 @@ py_test(
         "//jax:test_util",
         "//jax/experimental/jax2tf",
         "//jax/tools:jax_to_ir",
-    ] + py_deps("tensorflow"),
+    ] + py_deps("tensorflow_core"),
 )
 
-jax_test(
+py_test(
     name = "jaxpr_util_test",
     srcs = ["jaxpr_util_test.py"],
+    deps = [
+        "//jax",
+        "//jax:jaxpr_util",
+        "//jax:test_util",
+    ],
 )
 
 jax_test(
@@ -318,33 +383,37 @@ jax_test(
 jax_test(
     name = "lax_numpy_test",
     srcs = ["lax_numpy_test.py"],
-    pjrt_c_api_bypass = True,
+    backend_tags = {
+        "cpu": [
+            "noasan",
+            "notsan",
+        ],  # Test times out.
+        "tpu": ["noasan"],  # Test times out.
+    },
     shard_count = {
-        "cpu": 20,
-        "gpu": 20,
-        "tpu": 10,
+        "cpu": 40,
+        "gpu": 40,
+        "tpu": 40,
     },
 )
 
 jax_test(
     name = "lax_numpy_operators_test",
     srcs = ["lax_numpy_operators_test.py"],
-    pjrt_c_api_bypass = True,
     shard_count = {
-        "cpu": 10,
-        "gpu": 10,
-        "tpu": 5,
+        "cpu": 30,
+        "gpu": 30,
+        "tpu": 40,
     },
 )
 
 jax_test(
     name = "lax_numpy_reducers_test",
     srcs = ["lax_numpy_reducers_test.py"],
-    pjrt_c_api_bypass = True,
     shard_count = {
-        "cpu": 10,
-        "gpu": 10,
-        "tpu": 5,
+        "cpu": 20,
+        "gpu": 20,
+        "tpu": 20,
     },
 )
 
@@ -371,6 +440,11 @@ jax_test(
 )
 
 jax_test(
+    name = "lax_numpy_ufuncs_test",
+    srcs = ["lax_numpy_ufuncs_test.py"],
+)
+
+jax_test(
     name = "lax_numpy_vectorize_test",
     srcs = ["lax_numpy_vectorize_test.py"],
 )
@@ -378,15 +452,13 @@ jax_test(
 jax_test(
     name = "lax_scipy_test",
     srcs = ["lax_scipy_test.py"],
-    backend_tags = {
-        "tpu": ["noasan"],  # Test times out.
-    },
     shard_count = {
         "cpu": 20,
-        "gpu": 40,
-        "tpu": 10,
+        "gpu": 20,
+        "tpu": 20,
         "iree": 10,
     },
+    deps = py_deps("numpy") + py_deps("scipy") + py_deps("absl/testing"),
 )
 
 jax_test(
@@ -404,34 +476,47 @@ jax_test(
 )
 
 jax_test(
-    name = "lax_test",
-    srcs = ["lax_test.py"],
-    pjrt_c_api_bypass = True,
+    name = "lax_scipy_special_functions_test",
+    srcs = ["lax_scipy_special_functions_test.py"],
+    shard_count = {
+        "cpu": 20,
+        "gpu": 20,
+        "tpu": 20,
+        "iree": 10,
+    },
+    deps = py_deps("numpy") + py_deps("scipy") + py_deps("absl/testing"),
+)
+
+jax_test(
+    name = "lax_scipy_spectral_dac_test",
+    srcs = ["lax_scipy_spectral_dac_test.py"],
     shard_count = {
         "cpu": 40,
         "gpu": 40,
-        "tpu": 20,
+        "tpu": 40,
         "iree": 40,
     },
-)
-
-pytype_library(
-    name = "lax_test_lib",
-    srcs = ["lax_test.py"],
-    srcs_version = "PY3",
-    deps = ["//jax"],
-)
-
-pytype_library(
-    name = "lax_vmap_test_lib",
-    testonly = 1,
-    srcs = ["lax_vmap_test.py"],
-    srcs_version = "PY3",
     deps = [
-        ":lax_test_lib",
-        "//jax",
-        "//jax:test_util",
-    ],
+        "//jax:internal_test_util",
+    ] + py_deps("numpy") + py_deps("scipy") + py_deps("absl/testing"),
+)
+
+jax_test(
+    name = "lax_test",
+    srcs = ["lax_test.py"],
+    backend_tags = {
+        "tpu": ["noasan"],  # Times out.
+    },
+    shard_count = {
+        "cpu": 40,
+        "gpu": 40,
+        "tpu": 40,
+        "iree": 40,
+    },
+    deps = [
+        "//jax:internal_test_util",
+        "//jax:lax_reference",
+    ] + py_deps("numpy"),
 )
 
 jax_test(
@@ -443,7 +528,6 @@ jax_test(
         "tpu": 20,
         "iree": 40,
     },
-    deps = [":lax_test_lib"],
 )
 
 jax_test(
@@ -452,20 +536,42 @@ jax_test(
     shard_count = {
         "cpu": 40,
         "gpu": 40,
-        "tpu": 20,
+        "tpu": 40,
         "iree": 40,
     },
-    deps = [":lax_test_lib"],
+    deps = ["//jax:internal_test_util"] + py_deps("numpy") + py_deps("absl/testing"),
+)
+
+jax_test(
+    name = "lax_vmap_op_test",
+    srcs = ["lax_vmap_op_test.py"],
+    shard_count = {
+        "cpu": 40,
+        "gpu": 40,
+        "tpu": 40,
+        "iree": 40,
+    },
+    deps = ["//jax:internal_test_util"] + py_deps("numpy") + py_deps("absl/testing"),
 )
 
 py_test(
     name = "lazy_loader_test",
     srcs = [
-        "lazy_loader_module/__init__.py",
-        "lazy_loader_module/lazy_test_submodule.py",
         "lazy_loader_test.py",
     ],
     deps = [
+        "//jax:internal_test_util",
+        "//jax:test_util",
+    ],
+)
+
+py_test(
+    name = "deprecation_test",
+    srcs = [
+        "deprecation_test.py",
+    ],
+    deps = [
+        "//jax:internal_test_util",
         "//jax:test_util",
     ],
 )
@@ -477,6 +583,7 @@ jax_test(
         "tpu": [
             "cpu:8",
             "noasan",  # Times out.
+            "nomsan",  # Times out.
             "nodebug",  # Times out.
             "notsan",  # Times out.
         ],
@@ -484,7 +591,7 @@ jax_test(
     shard_count = {
         "cpu": 40,
         "gpu": 40,
-        "tpu": 10,
+        "tpu": 40,
         "iree": 20,
     },
 )
@@ -495,6 +602,15 @@ jax_test(
     disable_backends = [
         "gpu",
         "tpu",
+    ],
+)
+
+py_test(
+    name = "monitoring_test",
+    srcs = ["monitoring_test.py"],
+    deps = [
+        "//jax",
+        "//jax:test_util",
     ],
 )
 
@@ -515,6 +631,9 @@ jax_test(
 jax_test(
     name = "nn_test",
     srcs = ["nn_test.py"],
+    shard_count = {
+        "tpu": 10,
+    },
 )
 
 jax_test(
@@ -528,7 +647,7 @@ jax_test(
     srcs = ["pickle_test.py"],
     deps = [
         "//jax:experimental",
-    ] + py_deps("cloudpickle"),
+    ] + py_deps("cloudpickle") + py_deps("numpy"),
 )
 
 jax_test(
@@ -536,12 +655,9 @@ jax_test(
     srcs = ["pmap_test.py"],
     backend_tags = {
         "tpu": [
-            "noasan",  # Times out.
-            "nodebug",  # Times out.
-            "notsan",  # Times out.
+            "noasan",  # Times out under asan.
         ],
     },
-    pjrt_c_api_bypass = True,
     shard_count = {
         "cpu": 30,
         "gpu": 30,
@@ -549,8 +665,7 @@ jax_test(
     },
     tags = ["multiaccelerator"],
     deps = [
-        ":lax_test_lib",
-        ":lax_vmap_test_lib",
+        "//jax:internal_test_util",
     ],
 )
 
@@ -593,6 +708,14 @@ jax_test(
 )
 
 jax_test(
+    name = "pytorch_interoperability_test",
+    srcs = ["pytorch_interoperability_test.py"],
+    disable_backends = ["tpu"],
+    tags = ["not_build:arm"],
+    deps = py_deps("torch"),
+)
+
+jax_test(
     name = "qdwh_test",
     srcs = ["qdwh_test.py"],
 )
@@ -600,12 +723,47 @@ jax_test(
 jax_test(
     name = "random_test",
     srcs = ["random_test.py"],
-    shard_count = {
-        "cpu": 20,
-        "gpu": 20,
-        "tpu": 20,
-        "iree": 20,
+    backend_tags = {
+        "cpu": [
+            "notsan",  # Times out
+            "nomsan",  # Times out
+        ],
+        "tpu": [
+            "optonly",
+            "nomsan",  # Times out
+            "notsan",  # Times out
+        ],
     },
+    shard_count = {
+        "cpu": 30,
+        "gpu": 30,
+        "tpu": 40,
+        "iree": 30,
+    },
+    tags = ["noasan"],  # Times out
+)
+
+jax_test(
+    name = "random_lax_test",
+    srcs = ["random_lax_test.py"],
+    backend_tags = {
+        "cpu": [
+            "notsan",  # Times out
+            "nomsan",  # Times out
+        ],
+        "tpu": [
+            "optonly",
+            "nomsan",  # Times out
+            "notsan",  # Times out
+        ],
+    },
+    shard_count = {
+        "cpu": 40,
+        "gpu": 30,
+        "tpu": 40,
+        "iree": 30,
+    },
+    tags = ["noasan"],  # Times out
 )
 
 # TODO(b/199564969): remove once we always enable_custom_prng
@@ -614,7 +772,17 @@ jax_test(
     srcs = ["random_test.py"],
     args = ["--jax_enable_custom_prng=true"],
     backend_tags = {
-        "cpu": ["noasan"],  # Times out under asan.
+        "cpu": [
+            "noasan",  # Times out under asan/msan/tsan.
+            "nomsan",
+            "notsan",
+        ],
+        "tpu": [
+            "noasan",  # Times out under asan/msan/tsan.
+            "nomsan",
+            "notsan",
+            "optonly",
+        ],
     },
     main = "random_test.py",
     shard_count = {
@@ -628,6 +796,14 @@ jax_test(
 jax_test(
     name = "scipy_fft_test",
     srcs = ["scipy_fft_test.py"],
+    backend_tags = {
+        "tpu": [
+            "noasan",
+            "notsan",
+            "nomsan",
+        ],  # Times out on TPU with asan/tsan/msan.
+    },
+    shard_count = 4,
 )
 
 jax_test(
@@ -652,27 +828,43 @@ jax_test(
         "cpu": [
             "noasan",  # Test times out under asan.
         ],
+        # TPU test times out under asan/msan/tsan (b/260710050)
         "tpu": [
             "noasan",
+            "nomsan",
             "notsan",
-        ],  # Test times out under asan/tsan.
+            "optonly",
+        ],
     },
     shard_count = {
-        "cpu": 10,
-        "gpu": 10,
-        "tpu": 5,
+        "cpu": 40,
+        "gpu": 40,
+        "tpu": 50,
     },
+)
+
+jax_test(
+    name = "scipy_spatial_test",
+    srcs = ["scipy_spatial_test.py"],
+    deps = py_deps("scipy"),
 )
 
 jax_test(
     name = "scipy_stats_test",
     srcs = ["scipy_stats_test.py"],
+    backend_tags = {
+        "tpu": ["nomsan"],  # Times out
+    },
     shard_count = {
-        "cpu": 10,
-        "gpu": 20,
-        "tpu": 10,
+        "cpu": 40,
+        "gpu": 30,
+        "tpu": 40,
         "iree": 10,
     },
+    tags = [
+        "noasan",
+        "notsan",
+    ],  # Times out
 )
 
 jax_test(
@@ -681,17 +873,65 @@ jax_test(
     args = ["--jax_bcoo_cusparse_lowering=true"],
     backend_tags = {
         "cpu": [
-            "noasan",  # Test times out under asan.
+            "nomsan",  # Times out
+            "notsan",  # Times out
         ],
+        "tpu": ["optonly"],
+    },
+    # Use fewer cases to prevent timeouts.
+    backend_variant_args = {
+        "cpu": ["--jax_num_generated_cases=40"],
+        "cpu_x32": ["--jax_num_generated_cases=40"],
+        "gpu": ["--jax_num_generated_cases=40"],
     },
     shard_count = {
-        "cpu": 20,
-        "gpu": 40,
-        "tpu": 40,
+        "cpu": 50,
+        "gpu": 50,
+        "tpu": 50,
         "iree": 10,
     },
+    tags = [
+        "noasan",
+        "nomsan",
+        "notsan",
+    ],  # Test times out under asan/msan/tsan.
     deps = [
         "//jax:experimental_sparse",
+        "//jax:sparse_test_util",
+    ] + py_deps("scipy"),
+)
+
+jax_test(
+    name = "sparse_bcoo_bcsr_test",
+    srcs = ["sparse_bcoo_bcsr_test.py"],
+    args = ["--jax_bcoo_cusparse_lowering=true"],
+    backend_tags = {
+        "cpu": [
+            "nomsan",  # Times out
+            "notsan",  # Times out
+        ],
+        "tpu": ["optonly"],
+    },
+    # Use fewer cases to prevent timeouts.
+    backend_variant_args = {
+        "cpu": ["--jax_num_generated_cases=40"],
+        "cpu_x32": ["--jax_num_generated_cases=40"],
+        "gpu": ["--jax_num_generated_cases=40"],
+    },
+    shard_count = {
+        "cpu": 50,
+        "gpu": 50,
+        "tpu": 50,
+        "iree": 10,
+    },
+    tags = [
+        "noasan",
+        "nomsan",
+        "notsan",
+    ],  # Test times out under asan/msan/tsan.
+    deps = [
+        "//jax:experimental_sparse",
+        "//jax:sparse_test_util",
     ] + py_deps("scipy"),
 )
 
@@ -699,12 +939,23 @@ jax_test(
     name = "sparsify_test",
     srcs = ["sparsify_test.py"],
     args = ["--jax_bcoo_cusparse_lowering=true"],
+    backend_tags = {
+        "cpu": [
+            "noasan",  # Times out under asan
+            "notsan",  # Times out under asan
+        ],
+        "tpu": [
+            "noasan",  # Times out under asan.
+        ],
+    },
     shard_count = {
+        "cpu": 5,
         "gpu": 20,
         "tpu": 10,
     },
     deps = [
         "//jax:experimental_sparse",
+        "//jax:sparse_test_util",
     ],
 )
 
@@ -716,6 +967,10 @@ jax_test(
 jax_test(
     name = "checkify_test",
     srcs = ["checkify_test.py"],
+    shard_count = {
+        "gpu": 2,
+        "tpu": 2,
+    },
 )
 
 jax_test(
@@ -774,8 +1029,10 @@ py_test(
 py_test(
     name = "xla_bridge_test",
     srcs = ["xla_bridge_test.py"],
+    data = ["testdata/example_pjrt_plugin_config.json"],
     deps = [
         "//jax",
+        "//jax:compiler",
         "//jax:test_util",
     ] + py_deps("absl/logging"),
 )
@@ -785,7 +1042,7 @@ py_test(
     srcs = ["gfile_cache_test.py"],
     deps = [
         "//jax",
-        "//jax:compilation_cache",
+        "//jax:gfile_cache",
         "//jax:test_util",
     ],
 )
@@ -793,13 +1050,18 @@ py_test(
 jax_test(
     name = "compilation_cache_test",
     srcs = ["compilation_cache_test.py"],
-    backend_tags = {
-        "tpu": ["nomsan"],  # TODO(b/213388298): this test fails msan.
-    },
-    pjrt_c_api_bypass = True,
     deps = [
-        "//jax:compilation_cache",
-        "//jax:experimental",
+        "//jax:compilation_cache_internal",
+        "//jax:compiler",
+    ],
+)
+
+jax_test(
+    name = "cache_key_test",
+    srcs = ["cache_key_test.py"],
+    deps = [
+        "//jax:cache_key",
+        "//jax:compiler",
     ],
 )
 
@@ -813,10 +1075,12 @@ jax_test(
 )
 
 jax_test(
-    name = "host_callback_test",
+    name = "host_callback_outfeed_test",
     srcs = ["host_callback_test.py"],
     args = ["--jax_host_callback_outfeed=true"],
-    pjrt_c_api_bypass = True,
+    shard_count = {
+        "tpu": 5,
+    },
     deps = [
         "//jax:experimental",
         "//jax:experimental_host_callback",
@@ -825,13 +1089,9 @@ jax_test(
 )
 
 jax_test(
-    name = "host_callback_custom_call_test",
+    name = "host_callback_test",
     srcs = ["host_callback_test.py"],
     args = ["--jax_host_callback_outfeed=false"],
-    disable_backends = [
-        "gpu",
-        "tpu",  # On TPU we always use outfeed
-    ],
     main = "host_callback_test.py",
     shard_count = {
         "gpu": 5,
@@ -846,11 +1106,15 @@ jax_test(
 jax_test(
     name = "host_callback_to_tf_test",
     srcs = ["host_callback_to_tf_test.py"],
-    pjrt_c_api_bypass = True,
     deps = [
         "//jax:experimental_host_callback",
         "//jax:ode",
-    ] + py_deps("tensorflow"),
+    ] + py_deps("tensorflow_core"),
+)
+
+jax_test(
+    name = "key_reuse_test",
+    srcs = ["key_reuse_test.py"],
 )
 
 jax_test(
@@ -864,10 +1128,7 @@ jax_test(
 jax_test(
     name = "ann_test",
     srcs = ["ann_test.py"],
-    shard_count = 2,
-    deps = [
-        ":lax_test_lib",
-    ],
+    shard_count = 10,
 )
 
 py_test(
@@ -897,6 +1158,7 @@ jax_test(
         "gpu",
         "cpu",
     ],
+    tags = ["multiaccelerator"],
 )
 
 jax_test(
@@ -911,6 +1173,10 @@ jax_test(
 jax_test(
     name = "python_callback_test",
     srcs = ["python_callback_test.py"],
+    tags = ["multiaccelerator"],
+    deps = [
+        "//jax:experimental",
+    ],
 )
 
 jax_test(
@@ -925,20 +1191,52 @@ jax_test(
 jax_test(
     name = "state_test",
     srcs = ["state_test.py"],
+    # Use fewer cases to prevent timeouts.
+    args = [
+        "--jax_num_generated_cases=5",
+    ],
+    backend_variant_args = {
+        "tpu_pjrt_c_api": ["--jax_num_generated_cases=1"],
+    },
     enable_configs = [
         "gpu",
         "cpu",
     ],
+    shard_count = {
+        "cpu": 2,
+        "gpu": 2,
+        "tpu": 2,
+    },
+    deps = py_deps("hypothesis"),
 )
 
 jax_test(
     name = "for_loop_test",
     srcs = ["for_loop_test.py"],
     shard_count = {
-        "cpu": 10,
+        "cpu": 20,
         "gpu": 10,
-        "tpu": 10,
+        "tpu": 20,
     },
+)
+
+jax_test(
+    name = "shard_map_test",
+    srcs = ["shard_map_test.py"],
+    shard_count = {
+        "cpu": 50,
+        "gpu": 10,
+        "tpu": 50,
+    },
+    tags = [
+        "multiaccelerator",
+        "noasan",
+        "nomsan",
+        "notsan",
+    ],  # Times out under *SAN.
+    deps = [
+        "//jax:tree_util",
+    ],
 )
 
 jax_test(
@@ -946,14 +1244,133 @@ jax_test(
     srcs = ["clear_backends_test.py"],
 )
 
+jax_test(
+    name = "experimental_rnn_test",
+    srcs = ["experimental_rnn_test.py"],
+    disable_backends = [
+        "tpu",
+        "cpu",
+    ],
+    disable_configs = [
+        "gpu_a100",  # Numerical precision problems.
+    ],
+    shard_count = 8,
+    deps = [
+        "//jax:rnn",
+    ],
+)
+
+py_test(
+    name = "mosaic_test",
+    srcs = ["mosaic_test.py"],
+    deps = [
+        "//jax",
+        "//jax:mosaic",
+        "//jax:test_util",
+    ],
+)
+
+py_test(
+    name = "source_info_test",
+    srcs = ["source_info_test.py"],
+    deps = [
+        "//jax",
+        "//jax:test_util",
+    ],
+)
+
+py_test(
+    name = "package_structure_test",
+    srcs = ["package_structure_test.py"],
+    deps = [
+        "//jax",
+        "//jax:test_util",
+    ],
+)
+
+py_test(
+    name = "logging_test",
+    srcs = ["logging_test.py"],
+    deps = [
+        "//jax",
+        "//jax:test_util",
+    ],
+)
+
+jax_test(
+    name = "export_test",
+    srcs = ["export_test.py"],
+    enable_configs = [
+        "tpu_df_2x2",
+    ],
+    tags = [],
+    deps = [
+        "//jax/experimental/export",
+    ],
+)
+
+jax_test(
+    name = "shape_poly_test",
+    srcs = ["shape_poly_test.py"],
+    disable_configs = [
+        "gpu_a100",  # TODO(b/269593297): matmul precision issues
+    ],
+    enable_configs = [
+        "cpu",
+        "cpu_x32",
+    ],
+    shard_count = {
+        "cpu": 4,
+        "gpu": 4,
+        "tpu": 4,
+    },
+    tags = [
+        "noasan",  # Times out
+        "nomsan",  # Times out
+        "notsan",  # Times out
+    ],
+    deps = [
+        "//jax:internal_test_harnesses",
+        "//jax/experimental/export",
+    ],
+)
+
+jax_test(
+    name = "export_harnesses_multi_platform_test",
+    srcs = ["export_harnesses_multi_platform_test.py"],
+    disable_configs = [
+        "gpu_a100",  # TODO(b/269593297): matmul precision issues
+    ],
+    shard_count = {
+        "cpu": 40,
+        "gpu": 20,
+        "tpu": 20,
+    },
+    tags = [
+        "noasan",  # Times out, TODO(b/314760446): test failures on Sapphire Rapids.
+        "nodebug",  # Times out.
+        "nomsan",  # TODO(b/314760446): test failures on Sapphire Rapids.
+        "notsan",  # TODO(b/314760446): test failures on Sapphire Rapids.
+    ],
+    deps = [
+        "//jax:internal_test_harnesses",
+        "//jax/experimental/export",
+    ],
+)
+
 exports_files(
     [
         "api_test.py",
-        "pmap_test.py",
+        "array_test.py",
+        "cache_key_test.py",
         "compilation_cache_test.py",
+        "memories_test.py",
+        "pmap_test.py",
         "pjit_test.py",
         "python_callback_test.py",
+        "shard_map_test.py",
         "transfer_guard_test.py",
+        "layout_test.py",
     ],
     visibility = jax_test_file_visibility,
 )

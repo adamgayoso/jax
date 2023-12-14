@@ -24,7 +24,7 @@ from jax._src import test_util as jtu
 from jax._src.lax.control_flow import for_loop
 import jax.numpy as jnp
 
-from jax.config import config
+from jax import config
 config.parse_flags_with_absl()
 
 def remat_of_for_loop(nsteps, body, state, **kwargs):
@@ -131,6 +131,7 @@ class ForLoopTest(jtu.JaxTestCase):
         x, jnp.array([[0., 1.], [2., 5.], [4., 9.], [6., 13.]]))
 
   @_for_loop_impls
+  @jax.legacy_prng_key('allow')
   def test_for_loop_can_implement_cumsum(self, for_impl):
     def cumsum(x):
       def body(i, refs):
@@ -315,7 +316,7 @@ class ForLoopTransformationTest(jtu.JaxTestCase):
       _, b, c = for_impl(5, body, (a, b, c))
       return b, c
     a = jnp.arange(5.) + 1.
-    b = 1.
+    b = jnp.ones_like(a[0])
     _, f_lin = jax.linearize(f, a, b)
     expected_tangents = f_lin(a, b)
     _, actual_tangents = jax.jvp(f, (a, b), (a, b))
@@ -338,7 +339,7 @@ class ForLoopTransformationTest(jtu.JaxTestCase):
       _, b, c, _ = for_impl(5, body2, (a, b, c, 0))
       return b, c
     a = jnp.arange(5.) + 1.
-    b = 1.
+    b = jnp.ones_like(a[0])
     _, g_lin = jax.linearize(f, a, b)
     expected_tangents = g_lin(a, b)
     _, actual_tangents = jax.jvp(g, (a, b), (a, b))
@@ -383,6 +384,7 @@ class ForLoopTransformationTest(jtu.JaxTestCase):
                     rtol=7e-3, atol=1e-2)
 
   @jtu.skip_on_devices("gpu")  # TODO(mattjj,sharadmv): timeouts?
+  @jax.legacy_prng_key('allow')
   def test_grad_of_triple_nested_for_loop(self):
 
     func = lambda x: jnp.sin(x) + 1.

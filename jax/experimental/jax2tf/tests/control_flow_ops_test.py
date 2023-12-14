@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for the jax2tf conversion for control-flow primitives."""
-import unittest
 
 from absl.testing import absltest
 
@@ -24,17 +23,11 @@ import numpy as np
 
 from jax.experimental.jax2tf.tests import tf_test_util
 
-from jax.config import config
+from jax import config
 config.parse_flags_with_absl()
 
 
 class ControlFlowOpsTest(tf_test_util.JaxToTfTestCase):
-
-  def setUp(self):
-    super().setUp()
-    # TODO(b/252947617): re-enable these tests
-    if config.jax_array and config.jax2tf_default_experimental_native_lowering:
-      raise unittest.SkipTest("Test disabled for JAX_ARRAY")
 
   @jtu.ignore_warning(category=UserWarning,
                       message="Explicitly requested dtype .* requested in array is not available")

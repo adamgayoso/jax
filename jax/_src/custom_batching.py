@@ -12,26 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import functools
 import operator
-from typing import Callable, Optional
+from typing import Callable
 
-import jax
-from jax import core
-from jax import linear_util as lu
-from jax.interpreters import ad
-from jax.interpreters import batching
-from jax.interpreters.batching import not_mapped
-from jax.interpreters import mlir
-from jax.interpreters import partial_eval as pe
-from jax.interpreters import xla
-from jax.tree_util import (tree_flatten, tree_map, tree_structure,
-                           tree_unflatten, treedef_tuple)
+from jax import lax
+from jax._src import api
+from jax._src import core
 from jax._src import custom_api_util
+from jax._src import linear_util as lu
 from jax._src import source_info_util
 from jax._src import traceback_util
+from jax._src import tree_util
 from jax._src import util
 from jax._src.api_util import flatten_fun_nokwargs
+from jax._src.interpreters import ad
+from jax._src.interpreters import batching
+from jax._src.interpreters.batching import not_mapped
+from jax._src.interpreters import mlir
+from jax._src.interpreters import partial_eval as pe
+from jax._src.interpreters import xla
+from jax._src.tree_util import (tree_flatten, tree_map, tree_structure,
+                                tree_unflatten, treedef_tuple)
 
 
 source_info_util.register_exclusion(__file__)
@@ -45,7 +49,7 @@ zip, unsafe_zip = util.safe_zip, zip
 @custom_api_util.register_custom_decorator_type
 class custom_vmap:
   fun: Callable
-  vmap_rule: Optional[Callable]
+  vmap_rule: Callable | None
 
   def __init__(self, fun: Callable):
     functools.update_wrapper(self, fun)
@@ -64,13 +68,14 @@ class custom_vmap:
     args_flat, in_tree = tree_flatten(args)
     flat_fun, out_tree = flatten_fun_nokwargs(lu.wrap_init(self.fun), in_tree)
     in_avals = [core.raise_to_shaped(core.get_aval(x)) for x in args_flat]
-    debug = pe.debug_info(self.fun, in_tree, False, "custom_vmap")
+    debug = pe.debug_info(self.fun, in_tree, out_tree, False, "custom_vmap")
     jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(flat_fun, in_avals, debug)
-    assert not len(consts)
     closed_call = core.ClosedJaxpr(pe.convert_constvars_jaxpr(jaxpr), ())
+    in_tree = treedef_tuple((tree_structure(consts), in_tree))
+    assert self.vmap_rule is not None
     out_flat = custom_vmap_p.bind(*consts, *args_flat,
                                   call=closed_call,
-                                  rule=self.vmap_rule,
+                                  rule=ClosedRule(self.vmap_rule),
                                   in_tree=in_tree,
                                   out_tree=out_tree())
     return tree_unflatten(out_tree(), out_flat)
@@ -78,6 +83,21 @@ class custom_vmap:
 
 ### utils
 
+# Define a class, instead of making a function closing over `rule`, so
+# that we can override __str__
+class ClosedRule:
+  def __init__(self, rule):
+    functools.update_wrapper(self, rule)
+    self.rule = rule
+
+  def __call__(self, axis_size, all_in_batched, *all_args):
+    _, args = all_args
+    consts_batched, in_batched = all_in_batched
+    assert not any(tree_util.tree_leaves(consts_batched)), consts_batched
+    return call_rule(self.rule, axis_size, in_batched, args)
+
+  def __str__(self):
+    return str(self.rule)
 
 def ensure_list(xs):
   return xs if type(xs) is list else list(xs)
@@ -178,7 +198,7 @@ def custom_vmap_jvp(primals, tangents, *, call, rule, in_tree, out_tree):
       return out
 
     def to_vmap_over_extra_batched_dims(primals, tangents):
-      return jax.jvp(to_jvp, primals, tangents)
+      return api.jvp(to_jvp, primals, tangents)
 
     to_vmap_over_extra_batched_dims_flat, out_tree2 = flatten_fun_nokwargs(
         lu.wrap_init(to_vmap_over_extra_batched_dims),
@@ -258,7 +278,7 @@ def sequential_vmap(f):
       return f(*args)
 
     mapped_args, bcast_args = tree_split(in_batched, list(args))
-    out = jax.lax.map(to_map, mapped_args)
+    out = lax.map(to_map, mapped_args)
     out_batched = tree_map(lambda _: True, out)
     return out, out_batched
 

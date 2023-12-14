@@ -40,18 +40,18 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/literal_util.h"
-#include "tensorflow/compiler/xla/pjrt/cpu_device.h"
-#include "tensorflow/compiler/xla/pjrt/pjrt_client.h"
-#include "tensorflow/compiler/xla/status.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/tools/hlo_module_loader.h"
-#include "tensorflow/core/platform/init_main.h"
-#include "tensorflow/core/platform/logging.h"
+#include "xla/literal.h"
+#include "xla/literal_util.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/tfrt_cpu_pjrt_client.h"
+#include "xla/status.h"
+#include "xla/statusor.h"
+#include "xla/tools/hlo_module_loader.h"
+#include "tsl/platform/init_main.h"
+#include "tsl/platform/logging.h"
 
 int main(int argc, char** argv) {
-  tensorflow::port::InitMain("", &argc, &argv);
+  tsl::port::InitMain("", &argc, &argv);
 
   // Load HloModule from file.
   std::string hlo_filename = "/tmp/fn_hlo.txt";
@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
 
   // Get a CPU client.
   std::unique_ptr<xla::PjRtClient> client =
-      xla::GetCpuClient(/*asynchronous=*/true).value();
+      xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
 
   // Compile XlaComputation to PjRtExecutable.
   xla::XlaComputation xla_computation(test_module_proto);

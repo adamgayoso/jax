@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax._src.numpy.fft import (
   ifft as ifft,
   ifft2 as ifft2,
@@ -32,19 +35,3 @@ from jax._src.numpy.fft import (
   rfftfreq as rfftfreq,
   rfftn as rfftn,
 )
-
-# Module initialization is encapsulated in a function to avoid accidental
-# namespace pollution.
-_NOT_IMPLEMENTED = []
-def _init():
-  import numpy as np
-  from jax._src.numpy import lax_numpy
-  from jax._src import util
-  # Builds a set of all unimplemented NumPy functions.
-  for name, func in util.get_module_functions(np.fft).items():
-    if name not in globals():
-      _NOT_IMPLEMENTED.append(name)
-      globals()[name] = lax_numpy._not_implemented(func)
-
-_init()
-del _init

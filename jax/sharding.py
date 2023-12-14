@@ -12,12 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from jax._src.sharding import (
-    Sharding as Sharding,
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
+from jax._src.sharding import Sharding as Sharding
+from jax._src.sharding_impls import (
     XLACompatibleSharding as XLACompatibleSharding,
-    MeshPspecSharding as MeshPspecSharding,
+    NamedSharding as NamedSharding,
     SingleDeviceSharding as SingleDeviceSharding,
     PmapSharding as PmapSharding,
-    OpShardingSharding as OpShardingSharding,
-    DevicesSharding as DevicesSharding,
+    GSPMDSharding as GSPMDSharding,
+    PositionalSharding as PositionalSharding,
 )
+from jax._src.partition_spec import (
+    PartitionSpec as PartitionSpec,
+)
+from jax._src.interpreters.pxla import Mesh as Mesh

@@ -21,8 +21,13 @@ that represent the stages of this process.
 For more, see the `AOT walkthrough <https://jax.readthedocs.io/en/latest/aot.html>`_.
 """
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax._src.stages import (
   Compiled as Compiled,
+  CompilerOptions as CompilerOptions,
   Lowered as Lowered,
   Wrapped as Wrapped,
+  ArgInfo as ArgInfo,
 )

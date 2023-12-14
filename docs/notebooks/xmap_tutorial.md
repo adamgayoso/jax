@@ -5,7 +5,7 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.14.1
+    jupytext_version: 1.15.2
 kernelspec:
   display_name: Python 3
   name: python3
@@ -13,15 +13,13 @@ kernelspec:
 
 +++ {"id": "xgSYgIQhLJgx"}
 
-# Named axes and easy-to-revise parallelism
+# Named axes and easy-to-revise parallelism with `xmap`
 
-This tutorial introduces `jax.xmap` and the named-axis programming model that comes with it. By reading this, you'll learn how to write error-avoiding, self-documenting functions using named axes, then control how they're executed on hardware at any scale, from your laptop CPU to the largest TPU supercomputer.
+**_UPDATE:_** The recommended ways to do multi-device programming in JAX are using: 1) [`jit` (automatic partitioning of computation and `jax.Array` sharding)](https://jax.readthedocs.io/en/latest/notebooks/Distributed_arrays_and_automatic_parallelization.html); and/or 2) [`shard_map` (manual data sharding)](https://jax.readthedocs.io/en/latest/jep/14273-shard-map.html). Learn more in [Why don’t `pmap` or `xmap` already solve this?](https://jax.readthedocs.io/en/latest/jep/14273-shard-map.html#why-don-t-pmap-or-xmap-already-solve-this) in the [`shard_map` JEP document](https://jax.readthedocs.io/en/latest/jep/14273-shard-map.html).
+
+This tutorial introduces JAX `xmap` (`jax.experimental.maps.xmap`) and the named-axis programming model that comes with it. By reading this, you'll learn how to write error-avoiding, self-documenting functions using named axes, then control how they're executed on hardware at any scale, from your laptop CPU to the largest TPU supercomputer.
 
 We start with a toy neural network example.
-
----
-> **xmap is an experimental API. Expect rough edges and changes in the future!**
----
 
 +++ {"id": "7kppYlqDLJg9"}
 
@@ -120,7 +118,7 @@ But on a whim we can decide to parallelize over the batch axis:
 
 import jax
 import numpy as np
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 
 loss = xmap(named_loss, in_axes=in_axes, out_axes=[...],
             axis_resources={'batch': 'x'})
@@ -431,19 +429,19 @@ It is acceptable to omit a named dimension from _all arguments and the result_ i
 ```{code-cell} ipython3
 :id: rQgkof6lyJps
 
-if False:  # TODO: Implement all necessary cases in xeinsum
-  def named_batch_matrix_single_matrix(
-      x: f32[(5,), {'b': 20, 'k': 7}],
-      y: f32[(), {'k': 7, 'm': 11}]) \
-        -> f32[(5,), {'b': 20, 'm': 11}]:
-    return jnp.einsum('n{b,k},{k,m}->n{b,m}', x, y)
+def named_batch_matrix_single_matrix(
+    x: f32[(5,), {'b': 20, 'k': 7}],
+    y: f32[(), {'k': 7, 'm': 11}]) \
+      -> f32[(5,), {'b': 20, 'm': 11}]:
+  return jnp.einsum('n{b,k},{k,m}->n{b,m}', x, y)
 
-  x = jnp.ones((20, 5, 7))
-  y = jnp.ones((7, 11))
-  z = jnp.einsum('bnk,km->bnm', x, y)
-  zx = xmap(named_batch_matrix_single_matrix,
-            in_axes=[{0: 'b', 2: 'k'}, ['k', 'm', ...]],
-            out_axes=['b', 'n', 'm', ...])(x, y)
+x = jnp.ones((20, 5, 7))
+y = jnp.ones((7, 11))
+z = jnp.einsum('bnk,km->bnm', x, y)
+zx = xmap(named_batch_matrix_single_matrix,
+          in_axes=[{0: 'b', 2: 'k'}, ['k', 'm', ...]],
+          out_axes={0: 'b', 2: 'm'})(x, y)
+np.testing.assert_allclose(z, zx)
 ```
 
 +++ {"id": "JuFg25Yro4kZ"}
@@ -536,7 +534,7 @@ To introduce the resources in a scope, use the `with Mesh` context manager:
 ```{code-cell} ipython3
 :id: kYdoeaSS9m9f
 
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 
 local = local_matmul(x, x)  # The local function doesn't require the mesh definition
 with Mesh(*mesh_def):  # Makes the mesh axis names available as resources

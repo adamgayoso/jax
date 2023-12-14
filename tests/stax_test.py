@@ -23,13 +23,13 @@ from jax import random
 from jax.example_libraries import stax
 from jax import dtypes
 
-from jax.config import config
+from jax import config
 config.parse_flags_with_absl()
 
 
 def random_inputs(rng, input_shape):
   if type(input_shape) is tuple:
-    return rng.randn(*input_shape).astype(dtypes.canonicalize_dtype(np.float_))
+    return rng.randn(*input_shape).astype(dtypes.canonicalize_dtype(float))
   elif type(input_shape) is list:
     return [random_inputs(rng, shape) for shape in input_shape]
   else:
@@ -41,12 +41,15 @@ def _CheckShapeAgreement(test_case, init_fun, apply_fun, input_shape):
   rng_key, init_key = random.split(rng_key)
   result_shape, params = init_fun(init_key, input_shape)
   inputs = random_inputs(test_case.rng(), input_shape)
+  if params:
+    inputs = inputs.astype(np.dtype(params[0]))
   result = apply_fun(params, inputs, rng=rng_key)
   test_case.assertEqual(result.shape, result_shape)
 
 
 # stax makes use of implicit rank promotion, so we allow it in the tests.
-@jtu.with_config(jax_numpy_rank_promotion="allow")
+@jtu.with_config(jax_numpy_rank_promotion="allow",
+                 jax_legacy_prng_key="allow")
 class StaxTest(jtu.JaxTestCase):
 
   @jtu.sample_product(shape=[(2, 3), (5,)])
@@ -200,9 +203,9 @@ class StaxTest(jtu.JaxTestCase):
     key = random.PRNGKey(0)
     init_fun, apply_fun = stax.BatchNorm(axis=(0, 1, 2))
     input_shape = (4, 5, 6, 7)
-    inputs = random_inputs(self.rng(), input_shape)
 
     out_shape, params = init_fun(key, input_shape)
+    inputs = random_inputs(self.rng(), input_shape).astype(params[0].dtype)
     out = apply_fun(params, inputs)
 
     self.assertEqual(out_shape, input_shape)
@@ -216,9 +219,9 @@ class StaxTest(jtu.JaxTestCase):
     # Regression test for https://github.com/google/jax/issues/461
     init_fun, apply_fun = stax.BatchNorm(axis=(0, 2, 3))
     input_shape = (4, 5, 6, 7)
-    inputs = random_inputs(self.rng(), input_shape)
 
     out_shape, params = init_fun(key, input_shape)
+    inputs = random_inputs(self.rng(), input_shape).astype(params[0].dtype)
     out = apply_fun(params, inputs)
 
     self.assertEqual(out_shape, input_shape)

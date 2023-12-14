@@ -31,9 +31,10 @@ Only public JAX APIs are covered, which includes the following modules:
 * `jax.numpy`
 * `jax.ops`
 * `jax.profiler`
-* `jax.random`
+* `jax.random` (see [details below](#numerics-and-randomness))
 * `jax.scipy`
 * `jax.tree_util`
+* `jax.test_util`
 
 Not everything in these modules is public. Over time, we are working to separate
 public and private APIs. Public APIs are documented in the JAX documentation.
@@ -47,10 +48,31 @@ prefixed with underscores, although we do not entirely comply with this yet.
 * `jax.core`
 * `jax.linear_util`
 * `jax.lib`
+* `jax.prng`
 * `jax.interpreters`
 * `jax.experimental`
 * `jax.example_libraries`
-* `jax.test_util`
+* `jax.extend` (see [details](https://jax.readthedocs.io/en/latest/jax.extend.html))
 
+This list is not exhaustive.
 
-These lists are not exhaustive.
+## Numerics and randomness
+
+The *exact* values of numerical operations are not guaranteed to be
+stable across JAX releases. In fact, exact numerics are not
+necessarily stable at a given JAX version, across accelerator
+platforms, within or without `jax.jit`, and more.
+
+For a fixed PRNG key input, the outputs of pseudorandom functions in
+`jax.random` may vary across JAX versions. The compatibility policy
+applies only to the output *distribution*. For example, the expression
+`jax.random.gumbel(jax.random.key(72))` may return a different value
+across JAX releases, but `jax.random.gumbel` will remain a
+pseudorandom generator for the Gumbel distribution.
+
+We try to make such changes to pseudorandom values infrequently. When
+they happen, the changes are announced in the changelog, but do not
+follow a deprecation cycle. In some situations, JAX might expose a
+transient configuration flag that reverts the new behavior, to help
+users diagnose and update affected code. Such flags will last a
+deprecation window's amount of time.

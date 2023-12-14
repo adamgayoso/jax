@@ -13,30 +13,35 @@
 # limitations under the License.
 
 """COO (coordinate format) matrix object and associated primitives."""
+from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import partial
 import operator
-from typing import Any, NamedTuple, Tuple
+from typing import Any, NamedTuple
 import warnings
 
 import numpy as np
 
-from jax import core
+import jax
 from jax import lax
-from jax.interpreters import ad
 from jax.interpreters import mlir
 from jax.experimental.sparse._base import JAXSparse
-from jax.experimental.sparse.util import _coo_extract, _safe_asarray, CuSparseEfficiencyWarning
+from jax.experimental.sparse.util import _coo_extract, CuSparseEfficiencyWarning
 from jax import tree_util
+from jax._src import core
+from jax._src import dispatch
+from jax._src.interpreters import ad
 from jax._src.lax.lax import _const
-from jax._src.lib.mlir.dialects import mhlo
+from jax._src.lib.mlir.dialects import hlo
 from jax._src.lib import gpu_sparse
-from jax._src.numpy.lax_numpy import _promote_dtypes
+from jax._src.numpy.util import promote_dtypes
+from jax._src.typing import Array, ArrayLike, DTypeLike
 import jax.numpy as jnp
 
 
 Dtype = Any
-Shape = Tuple[int, ...]
+Shape = tuple[int, ...]
 
 class COOInfo(NamedTuple):
   shape: Shape
@@ -51,11 +56,15 @@ class COO(JAXSparse):
   Note: this class has minimal compatibility with JAX transforms such as
   grad and autodiff, and offers very little functionality. In general you
   should prefer :class:`jax.experimental.sparse.BCOO`.
+
+  Additionally, there are known failures in the case that `nse` is larger
+  than the true number of nonzeros in the represented matrix. This situation
+  is better handled in BCOO.
   """
-  data: jnp.ndarray
-  row: jnp.ndarray
-  col: jnp.ndarray
-  shape: Tuple[int, int]
+  data: jax.Array
+  row: jax.Array
+  col: jax.Array
+  shape: tuple[int, int]
   nse = property(lambda self: self.data.size)
   dtype = property(lambda self: self.data.dtype)
   _info = property(lambda self: COOInfo(
@@ -65,17 +74,18 @@ class COO(JAXSparse):
   _rows_sorted: bool
   _cols_sorted: bool
 
-  def __init__(self, args, *, shape, rows_sorted=False, cols_sorted=False):
-    self.data, self.row, self.col = _safe_asarray(args)
+  def __init__(self, args: tuple[Array, Array, Array], *, shape: Shape,
+               rows_sorted: bool = False, cols_sorted: bool = False):
+    self.data, self.row, self.col = map(jnp.asarray, args)
     self._rows_sorted = rows_sorted
     self._cols_sorted = cols_sorted
     super().__init__(args, shape=shape)
 
   @classmethod
-  def fromdense(cls, mat, *, nse=None, index_dtype=np.int32):
+  def fromdense(cls, mat: Array, *, nse: int | None = None, index_dtype: DTypeLike = np.int32) -> COO:
     return coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
 
-  def _sort_indices(self):
+  def _sort_indices(self) -> COO:
     """Return a copy of the COO matrix with sorted indices.
 
     The matrix is sorted by row indices and column indices per row.
@@ -89,18 +99,20 @@ class COO(JAXSparse):
                           rows_sorted=True)
 
   @classmethod
-  def _empty(cls, shape, *, dtype=None, index_dtype='int32'):
+  def _empty(cls, shape: Sequence[int], *, dtype: DTypeLike | None = None,
+             index_dtype: DTypeLike = 'int32') -> COO:
     """Create an empty COO instance. Public method is sparse.empty()."""
     shape = tuple(shape)
     if len(shape) != 2:
-      raise ValueError(f"COO must have ndim=2; got shape={shape}")
+      raise ValueError(f"COO must have ndim=2; got {shape=}")
     data = jnp.empty(0, dtype)
     row = col = jnp.empty(0, index_dtype)
     return cls((data, row, col), shape=shape, rows_sorted=True,
                cols_sorted=True)
 
   @classmethod
-  def _eye(cls, N, M, k, *, dtype=None, index_dtype='int32'):
+  def _eye(cls, N: int, M: int, k: int, *, dtype: DTypeLike | None = None,
+           index_dtype: DTypeLike = 'int32') -> COO:
     if k > 0:
       diag_size = min(N, M - k)
     else:
@@ -110,7 +122,6 @@ class COO(JAXSparse):
       # if k is out of range, return an empty matrix.
       return cls._empty((N, M), dtype=dtype, index_dtype=index_dtype)
 
-    k = jnp.asarray(k)
     data = jnp.ones(diag_size, dtype=dtype)
     idx = jnp.arange(diag_size, dtype=index_dtype)
     zero = _const(idx, 0)
@@ -119,23 +130,34 @@ class COO(JAXSparse):
     col = lax.add(idx, lax.cond(k <= 0, lambda: zero, lambda: k))
     return cls((data, row, col), shape=(N, M), rows_sorted=True, cols_sorted=True)
 
-  def todense(self):
+  def todense(self) -> Array:
     return coo_todense(self)
 
-  def transpose(self, axes=None):
+  def transpose(self, axes: tuple[int, ...] | None = None) -> COO:
     if axes is not None:
       raise NotImplementedError("axes argument to transpose()")
     return COO((self.data, self.col, self.row), shape=self.shape[::-1],
                rows_sorted=self._cols_sorted, cols_sorted=self._rows_sorted)
 
-  def tree_flatten(self):
+  def tree_flatten(self) -> tuple[tuple[Array, Array, Array], dict[str, Any]]:
     return (self.data, self.row, self.col), self._info._asdict()
 
-  def __matmul__(self, other):
+  @classmethod
+  def tree_unflatten(cls, aux_data, children):
+    obj = object.__new__(cls)
+    obj.data, obj.row, obj.col = children
+    if aux_data.keys() != {'shape', 'rows_sorted', 'cols_sorted'}:
+      raise ValueError(f"COO.tree_unflatten: invalid {aux_data=}")
+    obj.shape = aux_data['shape']
+    obj._rows_sorted = aux_data['rows_sorted']
+    obj._cols_sorted = aux_data['cols_sorted']
+    return obj
+
+  def __matmul__(self, other: ArrayLike) -> Array:
     if isinstance(other, JAXSparse):
       raise NotImplementedError("matmul between two sparse objects.")
     other = jnp.asarray(other)
-    data, other = _promote_dtypes(self.data, other)
+    data, other = promote_dtypes(self.data, other)
     self_promoted = COO((data, self.row, self.col), **self._info._asdict())
     if other.ndim == 1:
       return coo_matvec(self_promoted, other)
@@ -149,7 +171,7 @@ class COO(JAXSparse):
 
 coo_todense_p = core.Primitive('coo_todense')
 
-def coo_todense(mat):
+def coo_todense(mat: COO) -> Array:
   """Convert a COO-format sparse matrix to a dense matrix.
 
   Args:
@@ -159,7 +181,7 @@ def coo_todense(mat):
   """
   return _coo_todense(mat.data, mat.row, mat.col, spinfo=mat._info)
 
-def _coo_todense(data, row, col, *, spinfo):
+def _coo_todense(data: Array, row: Array, col: Array, *, spinfo: COOInfo) -> Array:
   """Convert CSR-format sparse matrix to a dense matrix.
 
   Args:
@@ -173,7 +195,6 @@ def _coo_todense(data, row, col, *, spinfo):
   """
   return coo_todense_p.bind(data, row, col, spinfo=spinfo)
 
-@coo_todense_p.def_impl
 def _coo_todense_impl(data, row, col, *, spinfo):
   return jnp.zeros(spinfo.shape, data.dtype).at[row, col].add(data)
 
@@ -184,11 +205,11 @@ def _coo_todense_abstract_eval(data, row, col, *, spinfo):
 _coo_todense_lowering = mlir.lower_fun(
     _coo_todense_impl, multiple_results=False)
 
-def _coo_todense_gpu_lowering(coo_todense_mhlo, ctx, data, row, col, *, spinfo):
+def _coo_todense_gpu_lowering(coo_todense_hlo, ctx, data, row, col, *, spinfo):
   data_aval, row_aval, _ = ctx.avals_in
   dtype = data_aval.dtype
   if not (np.issubdtype(dtype, np.floating) or np.issubdtype(dtype, np.complexfloating)):
-    warnings.warn(f"coo_todense cusparse/hipsparse lowering not available for dtype={dtype}. "
+    warnings.warn(f"coo_todense cusparse/hipsparse lowering not available for {dtype=}. "
                   "Falling back to default implementation.", CuSparseEfficiencyWarning)
     return _coo_todense_lowering(ctx, data, row, col, spinfo=spinfo)
 
@@ -201,14 +222,14 @@ def _coo_todense_gpu_lowering(coo_todense_mhlo, ctx, data, row, col, *, spinfo):
     shape = spinfo.shape[::-1]
   else:
     warnings.warn("coo_todense GPU lowering requires matrices with sorted rows or sorted cols. "
-                  "To sort the rows in your matrix, use e.g. mat = mat._sort_rows(). Falling "
+                  "To sort the rows in your matrix, use e.g. mat = mat._sort_indices(). Falling "
                   "back to the default implementation.", CuSparseEfficiencyWarning)
     return _coo_todense_lowering(ctx, data, row, col, spinfo=spinfo)
 
-  result = coo_todense_mhlo(
+  result = coo_todense_hlo(
       data, row, col, shape=shape, data_dtype=dtype, index_dtype=row_aval.dtype)
   return (
-      [mhlo.TransposeOp(result, mlir.dense_int_elements([1, 0])).result]
+      [hlo.transpose(result, mlir.dense_int_array([1, 0]))]
       if transpose else [result])
 
 
@@ -229,6 +250,8 @@ def _coo_todense_transpose(ct, data, row, col, *, spinfo):
 ad.defjvp(coo_todense_p, _coo_todense_jvp, None, None)
 ad.primitive_transposes[coo_todense_p] = _coo_todense_transpose
 mlir.register_lowering(coo_todense_p, _coo_todense_lowering)
+dispatch.simple_impl(coo_todense_p)
+
 if gpu_sparse.cuda_is_supported:
   mlir.register_lowering(
       coo_todense_p,
@@ -246,7 +269,7 @@ if gpu_sparse.rocm_is_supported:
 coo_fromdense_p = core.Primitive('coo_fromdense')
 coo_fromdense_p.multiple_results = True
 
-def coo_fromdense(mat, *, nse=None, index_dtype=jnp.int32):
+def coo_fromdense(mat: Array, *, nse: int | None = None, index_dtype: DTypeLike = jnp.int32) -> COO:
   """Create a COO-format sparse matrix from a dense matrix.
 
   Args:
@@ -259,12 +282,12 @@ def coo_fromdense(mat, *, nse=None, index_dtype=jnp.int32):
     mat_coo : COO representation of the matrix.
   """
   if nse is None:
-    nse = (mat != 0).sum()
-  nse = core.concrete_or_error(operator.index, nse, "coo_fromdense nse argument")
-  return COO(_coo_fromdense(mat, nse=nse, index_dtype=index_dtype),
+    nse = int((mat != 0).sum())
+  nse_int = core.concrete_or_error(operator.index, nse, "coo_fromdense nse argument")
+  return COO(_coo_fromdense(mat, nse=nse_int, index_dtype=index_dtype),
              shape=mat.shape, rows_sorted=True)
 
-def _coo_fromdense(mat, *, nse, index_dtype=jnp.int32):
+def _coo_fromdense(mat: Array, *, nse: int, index_dtype: DTypeLike = jnp.int32) -> tuple[Array, Array, Array]:
   """Create COO-format sparse matrix from a dense matrix.
 
   Args:
@@ -281,7 +304,6 @@ def _coo_fromdense(mat, *, nse, index_dtype=jnp.int32):
   nse = core.concrete_or_error(operator.index, nse, "nse argument of coo_fromdense()")
   return coo_fromdense_p.bind(mat, nse=nse, index_dtype=index_dtype)
 
-@coo_fromdense_p.def_impl
 def _coo_fromdense_impl(mat, *, nse, index_dtype):
   mat = jnp.asarray(mat)
   assert mat.ndim == 2
@@ -303,14 +325,14 @@ def _coo_fromdense_abstract_eval(mat, *, nse, index_dtype):
 _coo_fromdense_lowering = mlir.lower_fun(
     _coo_fromdense_impl, multiple_results=True)
 
-def _coo_fromdense_gpu_lowering(coo_fromdense_mhlo, ctx, mat, *, nse,
+def _coo_fromdense_gpu_lowering(coo_fromdense_hlo, ctx, mat, *, nse,
                                 index_dtype):
   dtype = ctx.avals_in[0].dtype
   if not (np.issubdtype(dtype, np.floating) or np.issubdtype(dtype, np.complexfloating)):
-    warnings.warn(f"coo_fromdense cusparse/hipsparse lowering not available for dtype={dtype}. "
+    warnings.warn(f"coo_fromdense cusparse/hipsparse lowering not available for {dtype=}. "
                   "Falling back to default implementation.", CuSparseEfficiencyWarning)
     return _coo_fromdense_lowering(ctx, mat, nse=nse, index_dtype=index_dtype)
-  data, row, col = coo_fromdense_mhlo(
+  data, row, col = coo_fromdense_hlo(
       mat, nnz=nse,
       data_dtype=dtype,
       index_dtype=np.dtype(index_dtype),
@@ -345,8 +367,8 @@ def _coo_fromdense_transpose(ct, M, *, nse, index_dtype):
 
 ad.primitive_jvps[coo_fromdense_p] = _coo_fromdense_jvp
 ad.primitive_transposes[coo_fromdense_p] = _coo_fromdense_transpose
-
 mlir.register_lowering(coo_fromdense_p, _coo_fromdense_lowering)
+dispatch.simple_impl(coo_fromdense_p)
 
 if gpu_sparse.cuda_is_supported:
   mlir.register_lowering(
@@ -364,7 +386,7 @@ if gpu_sparse.rocm_is_supported:
 
 coo_matvec_p = core.Primitive('coo_matvec')
 
-def coo_matvec(mat, v, transpose=False):
+def coo_matvec(mat: COO, v: Array, transpose: bool = False) -> Array:
   """Product of COO sparse matrix and a dense vector.
 
   Args:
@@ -378,9 +400,10 @@ def coo_matvec(mat, v, transpose=False):
     y : array of shape ``(mat.shape[1] if transpose else mat.shape[0],)`` representing
       the matrix vector product.
   """
-  return _coo_matvec(*mat._bufs, v, spinfo=mat._info, transpose=transpose)
+  data, row, col = mat._bufs
+  return _coo_matvec(data, row, col, v, spinfo=mat._info, transpose=transpose)
 
-def _coo_matvec(data, row, col, v, *, spinfo, transpose=False):
+def _coo_matvec(data: Array, row: Array, col: Array, v: Array, *, spinfo: COOInfo, transpose: bool = False) -> Array:
   """Product of COO sparse matrix and a dense vector.
 
   Args:
@@ -399,7 +422,6 @@ def _coo_matvec(data, row, col, v, *, spinfo, transpose=False):
   """
   return coo_matvec_p.bind(data, row, col, v, spinfo=spinfo, transpose=transpose)
 
-@coo_matvec_p.def_impl
 def _coo_matvec_impl(data, row, col, v, *, spinfo, transpose):
   v = jnp.asarray(v)
   if transpose:
@@ -422,15 +444,14 @@ def _coo_matvec_abstract_eval(data, row, col, v, *, spinfo, transpose):
 _coo_matvec_lowering = mlir.lower_fun(
     _coo_matvec_impl, multiple_results=False)
 
-def _coo_matvec_gpu_lowering(coo_matvec_mhlo, ctx, data, row, col, v, *, spinfo,
+def _coo_matvec_gpu_lowering(coo_matvec_hlo, ctx, data, row, col, v, *, spinfo,
                              transpose):
   data_aval, row_aval, _, x_aval = ctx.avals_in
   dtype = data_aval.dtype
   if dtype not in [np.float32, np.float64, np.complex64, np.complex128]:
-    warnings.warn(f"coo_matvec cusparse/hipsparse lowering not available for dtype={dtype}. "
+    warnings.warn(f"coo_matvec cusparse/hipsparse lowering not available for {dtype=}. "
                   "Falling back to default implementation.", CuSparseEfficiencyWarning)
-    return _coo_matvec_lowering(ctx, data, row, col, v, spinfo=spinfo,
-                                transpose=transpose)
+    return _coo_matvec_lowering(ctx, data, row, col, v, spinfo=spinfo, transpose=transpose)
 
   if spinfo.rows_sorted:
     shape = spinfo.shape
@@ -440,12 +461,12 @@ def _coo_matvec_gpu_lowering(coo_matvec_mhlo, ctx, data, row, col, v, *, spinfo,
     shape = spinfo.shape[::-1]
   else:
     warnings.warn("coo_matvec GPU lowering requires matrices with sorted rows or sorted cols. "
-                  "To sort the rows in your matrix, use e.g. mat = mat._sort_rows(). Falling "
+                  "To sort the rows in your matrix, use e.g. mat = mat._sort_indices(). Falling "
                   "back to the default implementation.", CuSparseEfficiencyWarning)
     return _coo_matvec_lowering(ctx, data, row, col, v, spinfo=spinfo,
                                 transpose=transpose)
 
-  return [coo_matvec_mhlo(
+  return [coo_matvec_hlo(
       data, row, col, v, shape=shape, transpose=transpose,
       index_dtype=row_aval.dtype, data_dtype=dtype, x_dtype=x_aval.dtype)]
 
@@ -471,6 +492,8 @@ def _coo_matvec_transpose(ct, data, row, col, v, *, spinfo, transpose):
 ad.defjvp(coo_matvec_p, _coo_matvec_jvp_mat, None, None, _coo_matvec_jvp_vec)
 ad.primitive_transposes[coo_matvec_p] = _coo_matvec_transpose
 mlir.register_lowering(coo_matvec_p, _coo_matvec_lowering)
+dispatch.simple_impl(coo_matvec_p)
+
 if gpu_sparse.cuda_is_supported:
   mlir.register_lowering(
       coo_matvec_p,
@@ -488,7 +511,7 @@ if gpu_sparse.rocm_is_supported:
 
 coo_matmat_p = core.Primitive('coo_matmat')
 
-def coo_matmat(mat, B, *, transpose=False):
+def coo_matmat(mat: COO, B: Array, *, transpose: bool = False) -> Array:
   """Product of COO sparse matrix and a dense matrix.
 
   Args:
@@ -502,9 +525,10 @@ def coo_matmat(mat, B, *, transpose=False):
     C : array of shape ``(mat.shape[1] if transpose else mat.shape[0], cols)``
       representing the matrix vector product.
   """
-  return _coo_matmat(*mat._bufs, B, spinfo=mat._info, transpose=transpose)
+  data, row, col = mat._bufs
+  return _coo_matmat(data, row, col, B, spinfo=mat._info, transpose=transpose)
 
-def _coo_matmat(data, row, col, B, *, spinfo, transpose=False):
+def _coo_matmat(data: Array, row: Array, col: Array, B: Array, *, spinfo: COOInfo, transpose: bool = False) -> Array:
   """Product of COO sparse matrix and a dense matrix.
 
   Args:
@@ -523,7 +547,6 @@ def _coo_matmat(data, row, col, B, *, spinfo, transpose=False):
   """
   return coo_matmat_p.bind(data, row, col, B, spinfo=spinfo, transpose=transpose)
 
-@coo_matmat_p.def_impl
 def _coo_matmat_impl(data, row, col, B, *, spinfo, transpose):
   B = jnp.asarray(B)
   if transpose:
@@ -544,15 +567,15 @@ def _coo_matmat_abstract_eval(data, row, col, B, *, spinfo, transpose):
 
 _coo_matmat_lowering = mlir.lower_fun(_coo_matmat_impl, multiple_results=False)
 
-def _coo_matmat_gpu_lowering(coo_matmat_mhlo, ctx, data, row, col, B, *, spinfo,
+def _coo_matmat_gpu_lowering(coo_matmat_hlo, ctx, data, row, col, B, *, spinfo,
                              transpose):
   data_aval, row_aval, _, B_aval = ctx.avals_in
   dtype = data_aval.dtype
   if dtype not in [np.float32, np.float64, np.complex64, np.complex128]:
-    warnings.warn(f"coo_matmat cusparse/hipsprse lowering not available for dtype={dtype}. "
+    warnings.warn(f"coo_matmat cusparse/hipsprse lowering not available for {dtype=}. "
                   "Falling back to default implementation.", CuSparseEfficiencyWarning)
-    return _coo_matmat_lowering(ctx, data, row, col, B, spinfo=spinfo,
-                                transpose=transpose)
+    return _coo_matmat_lowering(ctx, data, row, col, B, spinfo=spinfo, transpose=transpose)
+
   if spinfo.rows_sorted:
     shape = spinfo.shape
   elif spinfo.cols_sorted:
@@ -561,12 +584,12 @@ def _coo_matmat_gpu_lowering(coo_matmat_mhlo, ctx, data, row, col, B, *, spinfo,
     shape = spinfo.shape[::-1]
   else:
     warnings.warn("coo_matmat GPU lowering requires matrices with sorted rows or sorted cols. "
-                  "To sort the rows in your matrix, use e.g. mat = mat._sort_rows(). Falling "
+                  "To sort the rows in your matrix, use e.g. mat = mat._sort_indices(). Falling "
                   "back to the default implementation.", CuSparseEfficiencyWarning)
     return _coo_matmat_lowering(ctx, data, row, col, B, spinfo=spinfo,
                                 transpose=transpose)
 
-  return [coo_matmat_mhlo(data, row, col, B, shape=shape,
+  return [coo_matmat_hlo(data, row, col, B, shape=shape,
                                       transpose=transpose, x_dtype=B_aval.dtype,
                                       data_dtype=data_aval.dtype,
                                       index_dtype=row_aval.dtype)]
@@ -590,6 +613,8 @@ def _coo_matmat_transpose(ct, data, row, col, B, *, spinfo, transpose):
 ad.defjvp(coo_matmat_p, _coo_matmat_jvp_left, None, None, _coo_matmat_jvp_right)
 ad.primitive_transposes[coo_matmat_p] = _coo_matmat_transpose
 mlir.register_lowering(coo_matmat_p, _coo_matmat_lowering)
+dispatch.simple_impl(coo_matmat_p)
+
 if gpu_sparse.cuda_is_supported:
   mlir.register_lowering(
       coo_matmat_p,

@@ -25,13 +25,34 @@ except ImportError:
   cloudpickle = None
 
 import jax
-from jax import core
 from jax import numpy as jnp
-from jax.config import config
+from jax import config
 from jax.interpreters import pxla
 from jax._src import test_util as jtu
+from jax._src.lib import xla_client as xc
+
+import numpy as np
 
 config.parse_flags_with_absl()
+
+
+def _get_device_by_id(device_id: int) -> xc.Device:
+  for device in jax.devices():
+    if device.id == device_id:
+      return device
+  raise ValueError(f'Device {device_id} was not found')
+
+
+xc.Device.__reduce__ = lambda d: (_get_device_by_id, (d.id,))
+
+
+if cloudpickle is not None:
+  def _reduce_mesh(mesh):
+    # Avoid including mesh._hash in the serialized bytes for Mesh. Without this
+    # the Mesh would be different among the workers.
+    return jax.sharding.Mesh, (mesh.devices, mesh.axis_names)
+
+  cloudpickle.CloudPickler.dispatch_table[jax.sharding.Mesh] = _reduce_mesh
 
 
 class CloudpickleTest(jtu.JaxTestCase):
@@ -77,7 +98,7 @@ class CloudpickleTest(jtu.JaxTestCase):
 
 class PickleTest(jtu.JaxTestCase):
 
-  def testPickleOfDeviceArray(self):
+  def testPickleOfArray(self):
     x = jnp.arange(10.0)
     s = pickle.dumps(x)
     y = pickle.loads(s)
@@ -85,7 +106,7 @@ class PickleTest(jtu.JaxTestCase):
     self.assertIsInstance(y, type(x))
     self.assertEqual(x.aval, y.aval)
 
-  def testPickleOfDeviceArrayWeakType(self):
+  def testPickleOfArrayWeakType(self):
     x = jnp.array(4.0)
     self.assertEqual(x.aval.weak_type, True)
     s = pickle.dumps(x)
@@ -101,20 +122,21 @@ class PickleTest(jtu.JaxTestCase):
       s  = pickle.dumps(k1)
       k2 = pickle.loads(s)
       self.assertEqual(k1.dtype, k2.dtype)
-      self.assertArraysEqual(jax.random.key_data(k1),
-                             jax.random.key_data(k2))
+      with jax.legacy_prng_key('allow'):
+        self.assertArraysEqual(jax.random.key_data(k1),
+                              jax.random.key_data(k2))
 
   @parameterized.parameters(
-      (pxla.PartitionSpec(),),
-      (pxla.PartitionSpec(None),),
-      (pxla.PartitionSpec('x', None),),
-      (pxla.PartitionSpec(None, 'y'),),
-      (pxla.PartitionSpec('x', 'y'),),
-      (pxla.PartitionSpec(('x', 'y'),),),
+      (jax.sharding.PartitionSpec(),),
+      (jax.sharding.PartitionSpec(None),),
+      (jax.sharding.PartitionSpec('x', None),),
+      (jax.sharding.PartitionSpec(None, 'y'),),
+      (jax.sharding.PartitionSpec('x', 'y'),),
+      (jax.sharding.PartitionSpec(('x', 'y'),),),
   )
   def testPickleOfPartitionSpecs(self, partition_spec):
     restored_partition_spec = pickle.loads(pickle.dumps(partition_spec))
-    self.assertIsInstance(restored_partition_spec, pxla.PartitionSpec)
+    self.assertIsInstance(restored_partition_spec, jax.sharding.PartitionSpec)
     self.assertTupleEqual(partition_spec, restored_partition_spec)
 
   def testPickleX64(self):
@@ -132,8 +154,45 @@ class PickleTest(jtu.JaxTestCase):
     self.assertIsInstance(y, type(x))
 
   def testPickleTracerError(self):
-    with self.assertRaises(core.ConcretizationTypeError):
+    with self.assertRaises(jax.errors.ConcretizationTypeError):
       jax.jit(pickle.dumps)(0)
+
+  def testPickleSharding(self):
+    sharding = pxla.ShardingSpec((pxla.NoSharding(), pxla.Chunked(
+        (2, 2)), pxla.Unstacked(3)), (pxla.ShardedAxis(0), pxla.ShardedAxis(1),
+                                      pxla.ShardedAxis(2), pxla.Replicated(4)))
+    self.assertEqual(pickle.loads(pickle.dumps(sharding)), sharding)
+
+  def testPickleOpSharding(self):
+    sharding = pxla.ShardingSpec((pxla.NoSharding(), pxla.Chunked((2, 2))),
+                                 (pxla.ShardedAxis(0), pxla.ShardedAxis(1)))
+    op_sharding = sharding.sharding_proto().to_proto()
+    self.assertTrue(
+        xc.HloSharding.from_proto(pickle.loads(pickle.dumps(op_sharding))),
+        xc.HloSharding.from_proto(op_sharding))
+
+  def test_pickle_single_device_sharding(self):
+    s = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+    self.assertEqual(s, pickle.loads(pickle.dumps(s)))
+
+  def test_pickle_pmap_sharding(self):
+    ss = pxla.ShardingSpec(
+        sharding=(pxla.Unstacked(8),),
+        mesh_mapping=(pxla.ShardedAxis(0),))
+    s = jax.sharding.PmapSharding(jax.devices(), ss)
+    self.assertEqual(s, pickle.loads(pickle.dumps(s)))
+
+  def test_pickle_gspmd_sharding(self):
+    s = jax.sharding.GSPMDSharding.get_replicated(jax.devices())
+    self.assertEqual(s, pickle.loads(pickle.dumps(s)))
+
+  @unittest.skipIf(cloudpickle is None, "Requires cloudpickle")
+  def test_pickle_named_sharding(self):
+    s = jax.sharding.NamedSharding(
+        mesh=jax.sharding.Mesh(np.array(jax.devices()), 'd'),
+        spec=jax.sharding.PartitionSpec('d'))
+    self.assertEqual(s, pickle.loads(pickle.dumps(s)))
+
 
 if __name__ == "__main__":
   absltest.main(testLoader=jtu.JaxTestLoader())

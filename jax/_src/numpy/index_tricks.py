@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import abc
-from typing import Any, Iterable, List, Tuple, Union
+from collections.abc import Iterable
+from typing import Any, Union
 
 import jax
-from jax import core
-import jax._src.numpy.lax_numpy as jnp
-from jax._src.numpy.util import _promote_dtypes
+from jax._src import core
+from jax._src.numpy.util import promote_dtypes
+from jax._src.numpy.lax_numpy import (
+  arange, array, concatenate, expand_dims, linspace, meshgrid, stack, transpose
+)
 from jax._src.typing import Array, ArrayLike
 
 import numpy as np
@@ -35,29 +40,14 @@ def _make_1d_grid_from_slice(s: slice, op_name: str) -> Array:
   step = core.concrete_or_error(None, s.step,
                                 f"slice step of jnp.{op_name}") or 1
   if np.iscomplex(step):
-    newobj = jnp.linspace(start, stop, int(abs(step)))
+    newobj = linspace(start, stop, int(abs(step)))
   else:
-    newobj = jnp.arange(start, stop, step)
+    newobj = arange(start, stop, step)
 
   return newobj
 
 
-class _IndexGrid(abc.ABC):
-  """Creates multi-dimensional grids of indices."""
-  sparse: bool
-  op_name: str
-
-  def __getitem__(self, key: Union[slice, Tuple[slice, ...]]) -> Array:
-    if isinstance(key, slice):
-      return _make_1d_grid_from_slice(key, op_name=self.op_name)
-    output: Iterable[Array] = (_make_1d_grid_from_slice(k, op_name=self.op_name) for k in key)
-    with jax.numpy_dtype_promotion('standard'):
-      output = _promote_dtypes(*output)
-    output_arr = jnp.meshgrid(*output, indexing='ij', sparse=self.sparse)
-    return output_arr if self.sparse else jnp.stack(output_arr, 0)
-
-
-class _Mgrid(_IndexGrid):
+class _Mgrid:
   """Return dense multi-dimensional "meshgrid".
 
   LAX-backend implementation of :obj:`numpy.mgrid`. This is a convenience wrapper for
@@ -70,29 +60,38 @@ class _Mgrid(_IndexGrid):
     Pass ``[start:stop:step]`` to generate values similar to :func:`jax.numpy.arange`:
 
     >>> jnp.mgrid[0:4:1]
-    DeviceArray([0, 1, 2, 3], dtype=int32)
+    Array([0, 1, 2, 3], dtype=int32)
 
     Passing an imaginary step generates values similar to :func:`jax.numpy.linspace`:
 
     >>> jnp.mgrid[0:1:4j]
-    DeviceArray([0.        , 0.33333334, 0.6666667 , 1.        ], dtype=float32)
+    Array([0.        , 0.33333334, 0.6666667 , 1.        ], dtype=float32)
 
     Multiple slices can be used to create broadcasted grids of indices:
 
     >>> jnp.mgrid[:2, :3]
-    DeviceArray([[[0, 0, 0],
-                  [1, 1, 1]],
-                 [[0, 1, 2],
-                  [0, 1, 2]]], dtype=int32)
+    Array([[[0, 0, 0],
+            [1, 1, 1]],
+           [[0, 1, 2],
+            [0, 1, 2]]], dtype=int32)
   """
-  sparse = False
-  op_name = "mgrid"
+
+  def __getitem__(self, key: slice | tuple[slice, ...]) -> Array:
+    if isinstance(key, slice):
+      return _make_1d_grid_from_slice(key, op_name="mgrid")
+    output: Iterable[Array] = (_make_1d_grid_from_slice(k, op_name="mgrid") for k in key)
+    with jax.numpy_dtype_promotion('standard'):
+      output = promote_dtypes(*output)
+    output_arr = meshgrid(*output, indexing='ij', sparse=False)
+    if len(output_arr) == 0:
+      return arange(0)
+    return stack(output_arr, 0)
 
 
 mgrid = _Mgrid()
 
 
-class _Ogrid(_IndexGrid):
+class _Ogrid:
   """Return open multi-dimensional "meshgrid".
 
   LAX-backend implementation of :obj:`numpy.ogrid`. This is a convenience wrapper for
@@ -105,22 +104,30 @@ class _Ogrid(_IndexGrid):
     Pass ``[start:stop:step]`` to generate values similar to :func:`jax.numpy.arange`:
 
     >>> jnp.ogrid[0:4:1]
-    DeviceArray([0, 1, 2, 3], dtype=int32)
+    Array([0, 1, 2, 3], dtype=int32)
 
     Passing an imaginary step generates values similar to :func:`jax.numpy.linspace`:
 
     >>> jnp.ogrid[0:1:4j]
-    DeviceArray([0.        , 0.33333334, 0.6666667 , 1.        ], dtype=float32)
+    Array([0.        , 0.33333334, 0.6666667 , 1.        ], dtype=float32)
 
     Multiple slices can be used to create sparse grids of indices:
 
     >>> jnp.ogrid[:2, :3]
-    [DeviceArray([[0],
-                  [1]], dtype=int32),
-     DeviceArray([[0, 1, 2]], dtype=int32)]
+    [Array([[0],
+            [1]], dtype=int32),
+     Array([[0, 1, 2]], dtype=int32)]
   """
-  sparse = True
-  op_name = "ogrid"
+
+  def __getitem__(
+      self, key: slice | tuple[slice, ...]
+  ) -> Array | list[Array]:
+    if isinstance(key, slice):
+      return _make_1d_grid_from_slice(key, op_name="ogrid")
+    output: Iterable[Array] = (_make_1d_grid_from_slice(k, op_name="ogrid") for k in key)
+    with jax.numpy_dtype_promotion('standard'):
+      output = promote_dtypes(*output)
+    return meshgrid(*output, indexing='ij', sparse=True)
 
 
 ogrid = _Ogrid()
@@ -136,8 +143,8 @@ class _AxisConcat(abc.ABC):
   trans1d: int
   op_name: str
 
-  def __getitem__(self, key: Union[_IndexType, Tuple[_IndexType, ...]]) -> Array:
-    key_tup: Tuple[_IndexType, ...] = key if isinstance(key, tuple) else (key,)
+  def __getitem__(self, key: _IndexType | tuple[_IndexType, ...]) -> Array:
+    key_tup: tuple[_IndexType, ...] = key if isinstance(key, tuple) else (key,)
 
     params = [self.axis, self.ndmin, self.trans1d, -1]
 
@@ -150,7 +157,7 @@ class _AxisConcat(abc.ABC):
       elif directive == "c":
         params[-1] = 1
       else:
-        vec: List[Any] = directive.split(",")
+        vec: list[Any] = directive.split(",")
         k = len(vec)
         if k < 4:
           vec += params[k:]
@@ -174,10 +181,10 @@ class _AxisConcat(abc.ABC):
       elif isinstance(item, str):
         raise ValueError("string directive must be placed at the beginning")
       else:
-        newobj = jnp.array(item, copy=False)
+        newobj = array(item, copy=False)
         item_ndim = newobj.ndim
 
-      newobj = jnp.array(newobj, copy=False, ndmin=ndmin)
+      newobj = array(newobj, copy=False, ndmin=ndmin)
 
       if trans1d != -1 and ndmin - item_ndim > 0:
         shape_obj = tuple(range(ndmin))
@@ -185,15 +192,15 @@ class _AxisConcat(abc.ABC):
         num_lshifts = ndmin - abs(ndmin + trans1d + 1) % ndmin
         shape_obj = tuple(shape_obj[num_lshifts:] + shape_obj[:num_lshifts])
 
-        newobj = jnp.transpose(newobj, shape_obj)
+        newobj = transpose(newobj, shape_obj)
 
       output.append(newobj)
 
-    res = jnp.concatenate(tuple(output), axis=axis)
+    res = concatenate(tuple(output), axis=axis)
 
     if matrix != -1 and res.ndim == 1:
       # insert 2nd dim at axis 0 or 1
-      res = jnp.expand_dims(res, matrix)
+      res = expand_dims(res, matrix)
 
     return res
 
@@ -213,56 +220,56 @@ class RClass(_AxisConcat):
     Passing slices in the form ``[start:stop:step]`` generates ``jnp.arange`` objects:
 
     >>> jnp.r_[-1:5:1, 0, 0, jnp.array([1,2,3])]
-    DeviceArray([-1,  0,  1,  2,  3,  4,  0,  0,  1,  2,  3], dtype=int32)
+    Array([-1,  0,  1,  2,  3,  4,  0,  0,  1,  2,  3], dtype=int32)
 
     An imaginary value for ``step`` will create a ``jnp.linspace`` object instead,
     which includes the right endpoint:
 
     >>> jnp.r_[-1:1:6j, 0, jnp.array([1,2,3])]
-    DeviceArray([-1.        , -0.6       , -0.20000002,  0.20000005,
-                  0.6       ,  1.        ,  0.        ,  1.        ,
-                  2.        ,  3.        ], dtype=float32)
+    Array([-1.        , -0.6       , -0.20000002,  0.20000005,
+           0.6       ,  1.        ,  0.        ,  1.        ,
+           2.        ,  3.        ], dtype=float32)
 
     Use a string directive of the form ``"axis,dims,trans1d"`` as the first argument to
     specify concatenation axis, minimum number of dimensions, and the position of the
     upgraded array's original dimensions in the resulting array's shape tuple:
 
     >>> jnp.r_['0,2', [1,2,3], [4,5,6]] # concatenate along first axis, 2D output
-    DeviceArray([[1, 2, 3],
-                 [4, 5, 6]], dtype=int32)
+    Array([[1, 2, 3],
+           [4, 5, 6]], dtype=int32)
 
     >>> jnp.r_['0,2,0', [1,2,3], [4,5,6]] # push last input axis to the front
-    DeviceArray([[1],
-                 [2],
-                 [3],
-                 [4],
-                 [5],
-                 [6]], dtype=int32)
+    Array([[1],
+           [2],
+           [3],
+           [4],
+           [5],
+           [6]], dtype=int32)
 
     Negative values for ``trans1d`` offset the last axis towards the start
     of the shape tuple:
 
     >>> jnp.r_['0,2,-2', [1,2,3], [4,5,6]]
-    DeviceArray([[1],
-                 [2],
-                 [3],
-                 [4],
-                 [5],
-                 [6]], dtype=int32)
+    Array([[1],
+           [2],
+           [3],
+           [4],
+           [5],
+           [6]], dtype=int32)
 
     Use the special directives ``"r"`` or ``"c"`` as the first argument on flat inputs
     to create an array with an extra row or column axis, respectively:
 
     >>> jnp.r_['r',[1,2,3], [4,5,6]]
-    DeviceArray([[1, 2, 3, 4, 5, 6]], dtype=int32)
+    Array([[1, 2, 3, 4, 5, 6]], dtype=int32)
 
     >>> jnp.r_['c',[1,2,3], [4,5,6]]
-    DeviceArray([[1],
-                 [2],
-                 [3],
-                 [4],
-                 [5],
-                 [6]], dtype=int32)
+    Array([[1],
+           [2],
+           [3],
+           [4],
+           [5],
+           [6]], dtype=int32)
 
     For higher-dimensional inputs (``dim >= 2``), both directives ``"r"`` and ``"c"``
     give the same result.
@@ -288,32 +295,32 @@ class CClass(_AxisConcat):
 
     >>> a = jnp.arange(6).reshape((2,3))
     >>> jnp.c_[a,a]
-    DeviceArray([[0, 1, 2, 0, 1, 2],
-                 [3, 4, 5, 3, 4, 5]], dtype=int32)
+    Array([[0, 1, 2, 0, 1, 2],
+           [3, 4, 5, 3, 4, 5]], dtype=int32)
 
     Use a string directive of the form ``"axis:dims:trans1d"`` as the first argument to specify
     concatenation axis, minimum number of dimensions, and the position of the upgraded array's
     original dimensions in the resulting array's shape tuple:
 
     >>> jnp.c_['0,2', [1,2,3], [4,5,6]]
-    DeviceArray([[1],
-                 [2],
-                 [3],
-                 [4],
-                 [5],
-                 [6]], dtype=int32)
+    Array([[1],
+           [2],
+           [3],
+           [4],
+           [5],
+           [6]], dtype=int32)
 
     >>> jnp.c_['0,2,-1', [1,2,3], [4,5,6]]
-    DeviceArray([[1, 2, 3],
-                 [4, 5, 6]], dtype=int32)
+    Array([[1, 2, 3],
+           [4, 5, 6]], dtype=int32)
 
     Use the special directives ``"r"`` or ``"c"`` as the first argument on flat inputs
     to create an array with inputs stacked along the last axis:
 
     >>> jnp.c_['r',[1,2,3], [4,5,6]]
-    DeviceArray([[1, 4],
-                 [2, 5],
-                 [3, 6]], dtype=int32)
+    Array([[1, 4],
+           [2, 5],
+           [3, 6]], dtype=int32)
   """
   axis = -1
   ndmin = 2

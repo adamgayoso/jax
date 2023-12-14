@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax._src.custom_derivatives import (
   _initial_style_jaxpr,
   _sum_tangents,
@@ -24,5 +27,11 @@ from jax._src.custom_derivatives import (
   custom_vjp as custom_vjp,
   custom_vjp_call_p as custom_vjp_call_p,
   custom_vjp_call_jaxpr_p as custom_vjp_call_jaxpr_p,
+  custom_vjp_primal_tree_values as custom_vjp_primal_tree_values,
+  CustomVJPPrimal as CustomVJPPrimal,
   linear_call as linear_call,
+)
+
+from jax._src.ad_util import (
+  SymbolicZero as SymbolicZero
 )

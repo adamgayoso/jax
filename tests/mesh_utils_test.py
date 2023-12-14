@@ -15,8 +15,8 @@
 """Tests for mesh utils."""
 
 import collections
+from collections.abc import Sequence
 import dataclasses
-from typing import Sequence
 
 import numpy as np
 
@@ -24,11 +24,11 @@ from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 from jax.experimental import mesh_utils
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 from jax._src import test_util
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class MockTpuDevice:
   """Mock TPU device for testing."""
   id: int
@@ -63,9 +63,10 @@ def mock_tpu_devices(x, y, z, dev_kind, one_device_per_chip, num_slices=1,
   _validate_mocked_process_indices(devices, one_device_per_chip)
   return devices
 
+
 # If this function raises, it's a bug in the test code!
 def _validate_mocked_process_indices(devices, one_device_per_chip):
-  process_to_devices = collections.defaultdict(lambda: [])
+  process_to_devices = collections.defaultdict(list)
   for d in devices:
     process_to_devices[d.process_index].append(d)
 
@@ -96,9 +97,9 @@ def mock_4x4_devices():
   return mock_tpu_devices(4, 4, 1, 'TPU v3', False)
 
 
-def mock_8x8_devices():
+def mock_8x8_devices(one_device_per_chip=False):
   """Hard-coded reproduction of jax.devices() output on v3-8x8."""
-  return mock_tpu_devices(8, 8, 1, 'TPU v3', False)
+  return mock_tpu_devices(8, 8, 1, 'TPU v3', one_device_per_chip)
 
 
 def mock_2x2x1_devices(one_device_per_chip):
@@ -182,6 +183,7 @@ class MeshUtilsTest(test_util.JaxTestCase):
       ('4x8x8', mock_4x8x8_devices, [1, 32, 8], [(), (0, 2), (1,)]),
       ('8x8x8', mock_8x8x8_devices, [1, 64, 8], [(), (1, 2), (0,)]),
       ('8x8x16', mock_8x8x16_devices, [1, 64, 16], [(), (0, 1), (2,)]),
+      ('8x8', mock_8x8_devices, [8, 8], [(1,), (0, 2)])
   )
   def test_create_device_mesh_for_nd_torus(self, devices, mesh_shape,
                                            expected_assignment):
@@ -201,7 +203,48 @@ class MeshUtilsTest(test_util.JaxTestCase):
         mesh_shape, dcn_mesh_shape, devices)
     total_mesh_shape = tuple(
         m1 * m2 for m1, m2 in zip(mesh_shape, dcn_mesh_shape))
-    assert mesh.shape == total_mesh_shape
+    self.assertEqual(mesh.shape, total_mesh_shape)
+
+  @parameterized.named_parameters(
+      ('2X4x4x4a', (1, 16, 4), (2, 1, 1)),
+      ('2X4x4x4b', (1, 4, 16), (1, 2, 1)),
+  )
+  def test_create_hybrid_device_mesh_device_sorting(
+      self,
+      mesh_shape: tuple[int, ...],
+      dcn_mesh_shape: tuple[int, ...],
+  ):
+    devices = mock_tpu_devices(4, 4, 4, 'TPU v4', True, 2)
+    reversed_slices_devices = list(
+        np.flip(np.array(devices).reshape(2, -1), axis=0).flat)
+    mesh = mesh_utils.create_hybrid_device_mesh(
+        mesh_shape,
+        dcn_mesh_shape,
+        devices,
+        should_sort_granules_by_key=False,
+    )
+    sorted_slices_mesh = mesh_utils.create_hybrid_device_mesh(
+        mesh_shape,
+        dcn_mesh_shape,
+        reversed_slices_devices,
+        should_sort_granules_by_key=True,
+    )
+    np.testing.assert_array_equal(mesh, sorted_slices_mesh)
+    self.assertSetEqual(
+        {0, 1},
+        {d.slice_index for d in sorted_slices_mesh.flat},
+    )
+
+    reversed_slices_mesh = mesh_utils.create_hybrid_device_mesh(
+        mesh_shape,
+        dcn_mesh_shape,
+        reversed_slices_devices,
+        should_sort_granules_by_key=False,
+    )
+    self.assertSetEqual(
+        {1, 0},
+        {d.slice_index for d in reversed_slices_mesh.flat},
+    )
 
   @parameterized.named_parameters(
       # Physical ring order over tray
@@ -243,6 +286,20 @@ class MeshUtilsTest(test_util.JaxTestCase):
             mesh_shape, devices=devices, contiguous_submeshes=True)
         self._assert_contiguous_submeshes(mesh)
 
+  def test_create_contiguous_submeshes_for_tpu_v4_leading_1_dims(self):
+    v4 = mesh_utils._TPU_V4
+    for topology, mesh_shapes in mesh_utils._TRANSPOSE_TRICKS.items():
+      logging.vlog(1, "topology: %s", topology)
+      devices = mock_tpu_devices(topology[0], topology[1], topology[2], v4,
+                             one_device_per_chip=True)
+      for mesh_shape in mesh_shapes:
+        logging.vlog(1, '  mesh_shape: %s', (1, 1) + mesh_shape + (1, 1))
+        mesh = mesh_utils.create_device_mesh(
+            (1, 1) + mesh_shape + (1, 1),
+            devices=devices,
+            contiguous_submeshes=True)
+        self._assert_contiguous_submeshes(mesh)
+
   def test_create_contiguous_submeshes_errors(self):
     v4 = mesh_utils._TPU_V4
 
@@ -265,7 +322,7 @@ class MeshUtilsTest(test_util.JaxTestCase):
         ValueError,
         "create_device_mesh cannot create contiguous submeshes for mesh_shape "
         "(1, 128, 2) and physical mesh topology (4, 8, 8). "
-        "Available mesh_shapes: [(1, 64, 4), (1, 4, 64), (64, 4), (4, 64)]"):
+        'Available mesh_shapes: [(64, 4), (4, 64)]'):
       mesh_utils.create_device_mesh(
           mesh_shape, devices=devices, contiguous_submeshes=True)
 

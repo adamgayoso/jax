@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import unittest
 from collections import namedtuple
 from functools import partial
 import gc
@@ -24,24 +24,23 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import jax
-from jax import core
 from jax import lax
 from jax import numpy as jnp
-from jax import linear_util as lu
 from jax import jvp, linearize, vjp, jit, make_jaxpr
-from jax.core import UnshapedArray, ShapedArray, DBIdx
+from jax.api_util import flatten_fun_nokwargs
+from jax import config
 from jax.tree_util import (tree_flatten, tree_unflatten, tree_map, tree_reduce,
                            tree_leaves)
-from jax.api_util import flatten_fun_nokwargs
-from jax.interpreters import partial_eval as pe
 
+from jax._src import core
+from jax._src import linear_util as lu
 from jax._src import util
 from jax._src import test_util as jtu
-from jax._src.abstract_arrays import make_shaped_array
+from jax._src.core import UnshapedArray, ShapedArray, DBIdx
+from jax._src.interpreters import partial_eval as pe
 from jax._src.lax import lax as lax_internal
 from jax._src.lax import control_flow as lax_control_flow
 
-from jax.config import config
 config.parse_flags_with_absl()
 
 _ = pe.PartialVal.unknown(UnshapedArray(np.float32))
@@ -197,6 +196,16 @@ class CoreTest(jtu.JaxTestCase):
     nodes_equal = tree_map(operator.eq, tree, tree2)
     assert tree_reduce(operator.and_, nodes_equal)
 
+  @jtu.sample_product(
+      dtype=[*jtu.dtypes.all, object, [('i', 'i4'), ('f', 'f4')]]
+  )
+  def test_is_valid_jaxtype(self, dtype):
+    arr = np.zeros(10, dtype=dtype)
+    if dtype in jtu.dtypes.all:
+      self.assertTrue(core.valid_jaxtype(arr))
+    else:
+      self.assertFalse(core.valid_jaxtype(arr))
+
   @parameterized.named_parameters(
       (str(i), *spec) for i, spec in enumerate(test_specs))
   def test_jit(self, f, args):
@@ -322,6 +331,26 @@ class CoreTest(jtu.JaxTestCase):
     finally:
       gc.set_debug(debug)
 
+  def test_invalid_shape_error_with_jit_tracer_passed(self):
+    @jax.jit
+    def g_jit(x):
+      return jnp.zeros(shape=(2, x))
+
+    @jax.vmap
+    def g_vmap(x):
+      return jnp.zeros(shape=(2, x))
+
+    with self.assertRaisesRegex(
+        TypeError,
+        'This concrete value was not available in'
+        + ' Python because it depends on',
+    ):
+      g_jit(1)
+
+    with self.assertRaisesRegex(TypeError,
+          'This BatchTracer with object id'):
+      g_vmap(jnp.ones((1, )))
+
   def test_comparing_var(self):
     newsym = core.gensym()
     a = newsym(core.ShapedArray((), np.dtype('int32')))
@@ -337,7 +366,7 @@ class CoreTest(jtu.JaxTestCase):
     b = newsym(core.ShapedArray((), np.dtype('int32')))
     c = newsym(core.ShapedArray((), np.dtype('int32')))
     for ordering in it.permutations([a, b, c]):
-      assert sorted(list(ordering)) == [a, b, c]
+      assert sorted(ordering) == [a, b, c]
 
   def test_var_compared_by_identity(self):
     a1 = core.gensym()(core.ShapedArray((), np.dtype('int32')))
@@ -409,10 +438,19 @@ class JaxprTypeChecks(jtu.JaxTestCase):
     jaxpr = make_jaxpr(lambda x: lax.switch(0, [jnp.sin, jnp.cos], x))(1.).jaxpr
     core.check_jaxpr(jaxpr)
 
+  def test_check_jaxpr_jit_invalid(self):
+    jaxpr = make_jaxpr(jax.jit(lambda x, y: x + 1))(1., 2.).jaxpr
+    pjit_eqn, = jaxpr.eqns
+    jaxpr._eqns[0] = pjit_eqn._replace(invars=())
+    self.assertRaisesRegex(
+        core.JaxprTypeError,
+        '0 operands cannot call jaxpr with 2 inputs',
+        lambda: core.check_jaxpr(jaxpr))
+
   def test_check_jaxpr_cond_invalid(self):
     jaxpr = make_jaxpr(lambda x: lax.switch(0, [jnp.sin, jnp.cos], x))(1.).jaxpr
     cond = next(eqn for eqn in jaxpr.eqns if eqn.primitive.name == 'cond')
-    cond.params['branches'][0].jaxpr.invars = ()
+    cond.params['branches'][0].jaxpr._invars = ()
     self.assertRaisesRegex(
         core.JaxprTypeError,
         'cond branch 0 takes 0 inputs, branch 1 takes 1',
@@ -446,7 +484,7 @@ class JaxprTypeChecks(jtu.JaxTestCase):
         lambda x: lax.switch(0, [jnp.sin, jnp.cos], x), 100))(1.).jaxpr
 
     cond = next(eqn for eqn in jaxpr.eqns if eqn.primitive.name == 'cond')
-    cond.params['branches'][0].jaxpr.invars = ()
+    cond.params['branches'][0].jaxpr._invars = ()
     msg = ''
     try:
       core.check_jaxpr(jaxpr)
@@ -478,7 +516,7 @@ class JaxprTypeChecks(jtu.JaxTestCase):
 
     jaxpr = new_jaxpr()
     # int, not float!
-    jaxpr.eqns[0].outvars[0].aval = make_shaped_array(jnp.int32(2))
+    jaxpr.eqns[0].outvars[0].aval = core.ShapedArray((), jnp.dtype(jnp.int32))
     self.assertRaisesRegex(
         core.JaxprTypeError,
         r"Value for variable 'b' inconsistently typed as f32\[\] "
@@ -486,8 +524,8 @@ class JaxprTypeChecks(jtu.JaxTestCase):
         lambda: core.check_jaxpr(jaxpr))
 
     jaxpr = new_jaxpr()
-    jaxpr.eqns[0].outvars[0].aval = make_shaped_array(
-      np.ones((2, 3), dtype=jnp.float32))
+    jaxpr.eqns[0].outvars[0].aval = core.ShapedArray((2, 3),
+                                                     jnp.dtype(jnp.float32))
     self.assertRaisesRegex(
         core.JaxprTypeError,
         r"Value for variable 'b' inconsistently typed as f32\[\] "
@@ -597,6 +635,7 @@ class DynamicShapesTest(jtu.JaxTestCase):
     self.assertEqual((jaxpr.invars[0],), jaxpr.outvars[0].aval.shape)
     self.assertEqual((jaxpr.invars[0],), jaxpr.outvars[1].aval.shape)
 
+  @unittest.skip('This test does not work with nested pjit and DShapedArray')
   def test_staging_nested(self):
     n = core.ShapedArray((), jnp.dtype('int32'), weak_type=False)
     a = core.DShapedArray((DBIdx(0),), jnp.dtype('float32'), weak_type=False)
@@ -632,6 +671,7 @@ class DynamicShapesTest(jtu.JaxTestCase):
     self.assertEqual((inner_jaxpr.invars[0],), inner_jaxpr.invars[3].aval.shape)
     self.assertEqual((inner_jaxpr.invars[0],), inner_jaxpr.invars[4].aval.shape)
 
+  @unittest.skip('This test does not work with nested pjit and DShapedArray')
   def test_staging_nested_including_shape_arg(self):
     n = core.ShapedArray((), jnp.dtype('int32'), weak_type=False)
     a = core.DShapedArray((DBIdx(0),), jnp.dtype('float32'), weak_type=False)
@@ -692,6 +732,7 @@ class DynamicShapesTest(jtu.JaxTestCase):
     self.assertLen(jaxpr.outvars, 1)
     self.assertEqual(jaxpr.outvars[0].aval.shape, ())
 
+  @unittest.skip('This test does not work with nested pjit and DShapedArray')
   def test_typecheck_staging_nested(self):
     n = core.ShapedArray((), jnp.dtype('int32'), weak_type=False)
     m = core.ShapedArray((), jnp.dtype('int32'), weak_type=False)
@@ -742,6 +783,18 @@ class DynamicShapesTest(jtu.JaxTestCase):
     #   in (h,) }
     with self.assertRaisesRegex(TypeError, "inconsistently typed as"):
       core.check_jaxpr(jaxpr)
+
+  def test_check_jaxpr_key_reuse(self):
+    try:
+      from jax.experimental.key_reuse import KeyReuseError
+    except ImportError:
+      self.skipTest("Test requires jax.experimental.key_reuse")
+    def f(seed):
+      key = jax.random.key(seed)
+      return jax.random.uniform(key) + jax.random.normal(key)
+    with jax.enable_checks(True):
+      with self.assertRaises(KeyReuseError):
+        jax.jit(f)(0)
 
 
 if __name__ == '__main__':

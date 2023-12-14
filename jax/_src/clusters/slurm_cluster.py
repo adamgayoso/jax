@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import os
-from typing import Optional
-from jax._src.clusters import ClusterEnv
+from jax._src import clusters
 
 _JOBID_PARAM = 'SLURM_JOB_ID'
 _NODE_LIST = 'SLURM_STEP_NODELIST'
@@ -23,7 +24,7 @@ _PROCESS_ID = 'SLURM_PROCID'
 _LOCAL_PROCESS_ID = 'SLURM_LOCALID'
 _NUM_NODES = 'SLURM_STEP_NUM_NODES'
 
-class SlurmCluster(ClusterEnv):
+class SlurmCluster(clusters.ClusterEnv):
   @classmethod
   def is_env_present(cls) -> bool:
     return _JOBID_PARAM in os.environ
@@ -58,5 +59,5 @@ class SlurmCluster(ClusterEnv):
     return int(os.environ[_PROCESS_ID])
 
   @classmethod
-  def get_local_process_id(cls) -> Optional[int]:
+  def get_local_process_id(cls) -> int | None:
     return int(os.environ[_LOCAL_PROCESS_ID])

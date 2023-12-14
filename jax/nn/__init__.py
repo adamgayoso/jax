@@ -14,6 +14,9 @@
 
 """Common functions for neural network libraries."""
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax.numpy import tanh as tanh
 from jax.nn import initializers as initializers
 from jax._src.nn.functions import (
@@ -29,7 +32,6 @@ from jax._src.nn.functions import (
   log_sigmoid as log_sigmoid,
   log_softmax as log_softmax,
   logsumexp as logsumexp,
-  normalize as normalize,
   standardize as standardize,
   one_hot as one_hot,
   relu as relu,
@@ -41,4 +43,24 @@ from jax._src.nn.functions import (
   softplus as softplus,
   silu as silu,
   swish as swish,
+  squareplus as squareplus,
 )
+
+# Deprecations
+
+_deprecations = {
+    # Added Nov 8, 2023:
+    "normalize": (
+        "jax.nn.normalize is deprecated. Use jax.nn.standardize instead.",
+        standardize,
+    ),
+}
+
+import typing
+if typing.TYPE_CHECKING:
+  normalize = standardize
+else:
+  from jax._src.deprecations import deprecation_getattr as _deprecation_getattr
+  __getattr__ = _deprecation_getattr(__name__, _deprecations)
+  del _deprecation_getattr
+del typing

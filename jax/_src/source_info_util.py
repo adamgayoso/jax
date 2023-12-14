@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from collections.abc import Iterator
 import contextlib
 import dataclasses
 import functools
 import itertools
 import os.path
+import sys
+import sysconfig
 import threading
 import types
-from typing import Optional, Iterator, NamedTuple, Union, Tuple
+from typing import NamedTuple
 
 import jax.version
 from jax._src.lib import xla_client
@@ -39,21 +44,37 @@ class Frame(NamedTuple):
   end_column: int
 
 
-_exclude_paths = [os.path.dirname(jax.version.__file__)]
+_exclude_paths: list[str] = [
+    # Attach the separator to make sure that .../jax does not end up matching
+    # .../jax_triton and other packages that might have a jax prefix.
+    os.path.dirname(jax.version.__file__) + os.sep,
+    # Also exclude stdlib as user frames. In a non-standard Python runtime,
+    # the following two may be different.
+    sysconfig.get_path('stdlib'),
+    os.path.dirname(sysconfig.__file__)
+]
 
-def register_exclusion(path):
+def register_exclusion(path: str):
   _exclude_paths.append(path)
+
+
+# Explicit inclusions take priority over exclude paths.
+_include_paths: list[str] = []
+
+def register_inclusion(path: str):
+  _include_paths.append(path)
+
 
 class Scope(NamedTuple):
   name: str
 
-  def wrap(self, stack: Tuple[str, ...]) -> Tuple[str, ...]:
+  def wrap(self, stack: tuple[str, ...]) -> tuple[str, ...]:
     return (self.name, *stack)
 
 class Transform(NamedTuple):
   name: str
 
-  def wrap(self, stack: Tuple[str, ...]) -> Tuple[str, ...]:
+  def wrap(self, stack: tuple[str, ...]) -> tuple[str, ...]:
     if stack:
       return (f'{self.name}({stack[0]})', *stack[1:])
     else:
@@ -61,9 +82,9 @@ class Transform(NamedTuple):
 
 @dataclasses.dataclass(frozen=True)
 class NameStack:
-  stack: Tuple[Union[Scope, Transform], ...] = ()
+  stack: tuple[Scope | Transform, ...] = ()
 
-  def extend(self, name: Union[Tuple[str, ...], str]) -> 'NameStack':
+  def extend(self, name: tuple[str, ...] | str) -> NameStack:
     if not isinstance(name, tuple):
       name = (name,)
     scopes = tuple(map(Scope, name))
@@ -72,38 +93,47 @@ class NameStack:
   def wrap_name(self, name: str) -> str:
     if not self.stack:
       return name
-    return f'{str(self)}/{name}'
+    return f'{self}/{name}'
 
-  def transform(self, transform_name: str) -> 'NameStack':
+  def transform(self, transform_name: str) -> NameStack:
     return NameStack((*self.stack, Transform(transform_name)))
 
-  def __getitem__(self, idx) -> 'NameStack':
+  def __getitem__(self, idx: slice) -> NameStack:
     return NameStack(self.stack[idx])
 
   def __len__(self):
     return len(self.stack)
 
-  def __add__(self, other: 'NameStack') -> 'NameStack':
+  def __add__(self, other: NameStack) -> NameStack:
     return NameStack(self.stack + other.stack)
 
-  def __radd__(self, other: 'NameStack') -> 'NameStack':
+  def __radd__(self, other: NameStack) -> NameStack:
     return NameStack(other.stack + self.stack)
 
   def __str__(self) -> str:
-    scope: Tuple[str, ...] = ()
+    scope: tuple[str, ...] = ()
     for elem in self.stack[::-1]:
       scope = elem.wrap(scope)
     return '/'.join(scope)
 
+
+def new_name_stack(name: str = '') -> NameStack:
+  name_stack = NameStack()
+  if name:
+    name_stack = name_stack.extend(name)
+  return name_stack
+
+
 class SourceInfo(NamedTuple):
-  traceback: Optional[Traceback]
+  traceback: Traceback | None
   name_stack: NameStack
 
-  def replace(self, *, traceback: Optional[Traceback] = None,
-      name_stack: Optional[NameStack] = None) -> 'SourceInfo':
-    traceback = traceback or self.traceback
-    name_stack = self.name_stack if name_stack is None else name_stack
-    return self._replace(traceback=traceback, name_stack=name_stack)
+  def replace(self, *, traceback: Traceback | None = None,
+      name_stack: NameStack | None = None) -> SourceInfo:
+    return SourceInfo(
+        self.traceback if traceback is None else traceback,
+        self.name_stack if name_stack is None else name_stack
+    )
 
 def new_source_info() -> SourceInfo:
   return SourceInfo(None, NameStack())
@@ -111,19 +141,20 @@ def new_source_info() -> SourceInfo:
 def is_user_filename(filename: str) -> bool:
   """Heuristic that guesses the identity of the user's code in a stack trace."""
   return (filename.endswith("_test.py") or
-          not any(filename.startswith(p) for p in _exclude_paths))
+          not any(filename.startswith(p) for p in _exclude_paths) or
+          any(filename.startswith(p) for p in _include_paths))
 
-if hasattr(xla_client.Traceback, "code_addr2location"):
-  # Python 3.11+
-  def _raw_frame_to_frame(code: types.CodeType, lasti: int) -> Frame:
+if sys.version_info >= (3, 11):
+  def raw_frame_to_frame(code: types.CodeType, lasti: int) -> Frame:
     loc = xla_client.Traceback.code_addr2location(code, lasti)
     start_line, start_column, end_line, end_column = loc
     return Frame(file_name=code.co_filename,
-                function_name=code.co_name,
+                function_name=code.co_qualname,
                 start_line=start_line, start_column=start_column,
                 end_line=end_line, end_column=end_column)
 else:
-  def _raw_frame_to_frame(code: types.CodeType, lasti: int) -> Frame:
+  def raw_frame_to_frame(code: types.CodeType, lasti: int) -> Frame:
+    # pre-3.11 co_qualname does not exist, use co_name
     return Frame(file_name=code.co_filename,
                 function_name=code.co_name,
                 start_line=xla_client.Traceback.code_addr2line(code, lasti),
@@ -131,19 +162,19 @@ else:
 
 def user_frames(source_info: SourceInfo) -> Iterator[Frame]:
   """Iterator over the user's frames, filtering jax-internal frames."""
-  # Guess the user's frame is the innermost frame not in the jax source tree
-  # We don't use traceback_util.path_starts_with because that incurs filesystem
-  # access, which may be slow; we call this function when e.g. adding source
-  # provenance annotations to XLA lowerings, so we don't want to incur the cost.
-  # We consider files that end with _test.py as user frames, to allow testing
-  # this mechanism from tests.
+  # Guess the user's frame is the innermost frame not in the jax source tree or
+  # Python stdlib. We don't use traceback_util.path_starts_with because that
+  # incurs filesystem access, which may be slow; we call this function when
+  # e.g. adding source provenance annotations to XLA lowerings, so we don't
+  # want to incur the cost. We consider files that end with _test.py as user
+  # frames, to allow testing this mechanism from tests.
   traceback = source_info.traceback
   code, lasti = traceback.raw_frames() if traceback else ([], [])
-  return (_raw_frame_to_frame(code[i], lasti[i]) for i in range(len(code))  # type: ignore
+  return (raw_frame_to_frame(code[i], lasti[i]) for i in range(len(code))  # type: ignore
           if is_user_filename(code[i].co_filename))
 
 @functools.lru_cache(maxsize=64)
-def user_frame(source_info: SourceInfo) -> Optional[Frame]:
+def user_frame(source_info: SourceInfo) -> Frame | None:
   return next(user_frames(source_info), None)
 
 def _summarize_frame(frame: Frame) -> str:
@@ -188,7 +219,7 @@ def has_user_context(e):
   return False
 
 @contextlib.contextmanager
-def user_context(c: Optional[Traceback], *, name_stack: Optional[NameStack] = None):
+def user_context(c: Traceback | None, *, name_stack: NameStack | None = None):
   prev = _source_info_context.context
   _source_info_context.context = _source_info_context.context.replace(
       traceback=c, name_stack=name_stack)

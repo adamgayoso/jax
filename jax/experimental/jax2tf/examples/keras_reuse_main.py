@@ -47,8 +47,7 @@ def main(_):
   with strategy.scope():
     images = tf.keras.layers.Input(
         mnist_lib.input_shape, batch_size=mnist_lib.train_batch_size)
-    # We do not yet train the SavedModel, due to b/123499169.
-    keras_feature_extractor = hub.KerasLayer(feature_model_dir, trainable=False)
+    keras_feature_extractor = hub.KerasLayer(feature_model_dir, trainable=True)
     features = keras_feature_extractor(images)
     predictor = tf.keras.layers.Dense(10, activation="softmax")
     predictions = predictor(features)
@@ -66,7 +65,7 @@ def main(_):
       tfds.Split.TEST, batch_size=mnist_lib.test_batch_size)
   keras_model.fit(train_ds, epochs=FLAGS.num_epochs, validation_data=test_ds)
 
-  if FLAGS.show_images:
+  if saved_model_main.SHOW_IMAGES.value:
     mnist_lib.plot_images(
         test_ds,
         1,

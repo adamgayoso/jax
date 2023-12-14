@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Note: import <name> as <name> is required for names to be exported.
+# See PEP 484 & https://github.com/google/jax/issues/7570
+
 from jax._src.checkify import (
     Error as Error,
     ErrorCategory as ErrorCategory,
+    JaxRuntimeError as JaxRuntimeError,
     all_checks as all_checks,
     automatic_checks as automatic_checks,
     check as check,
     check_error as check_error,
     checkify as checkify,
+    debug_check as debug_check,
     div_checks as div_checks,
     float_checks as float_checks,
     index_checks as index_checks,
